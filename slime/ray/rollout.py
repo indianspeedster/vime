@@ -15,7 +15,6 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
 from slime.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, SglangConfig
-from slime.backends.sglang_utils.sglang_engine import SGLangEngine
 from slime.rollout.base_types import call_rollout_fn
 from slime.utils import logging_utils
 from slime.utils.health_monitor import RolloutHealthMonitor
@@ -88,7 +87,14 @@ class ServerGroup:
 
         pg, reordered_bundle_indices, reordered_gpu_ids = self.pg
 
-        RolloutRayActor = ray.remote(SGLangEngine)
+        if getattr(self.args, "rollout_backend", "sglang") == "vllm":
+            from slime.backends.vllm_utils.vllm_engine import VLLMEngine
+
+            RolloutRayActor = ray.remote(VLLMEngine)
+        else:
+            from slime.backends.sglang_utils.sglang_engine import SGLangEngine
+
+            RolloutRayActor = ray.remote(SGLangEngine)
 
         rollout_engines = []
         for i in range(len(self.all_engines)):
@@ -432,6 +438,18 @@ class RolloutManager:
     def dispose(self):
         for monitor in self._health_monitors:
             monitor.stop()
+        # Release inference workers (vLLM / SGLang). debug_rollout_only still hits this path at train.py end.
+        shutdown_refs = []
+        for srv in self.servers.values():
+            for group in srv.server_groups:
+                for eng in group.all_engines:
+                    if eng is not None:
+                        shutdown_refs.append(eng.shutdown.remote())
+        if shutdown_refs:
+            try:
+                ray.get(shutdown_refs)
+            except Exception as e:
+                logger.warning("Engine shutdown during dispose failed (non-fatal): %s", e)
         logging_utils.finish_tracking(self.args)
 
     @property
@@ -925,8 +943,10 @@ def _start_router(args, *, has_pd_disaggregation: bool = False, force_new: bool 
         router_port = args.sglang_router_port
         if router_port is None:
             router_port = find_available_port(random.randint(3000, 4000))
-
-    from sglang_router.launch_router import RouterArgs
+    if getattr(args, "rollout_backend", "sglang") == "vllm":
+        from vllm_router.launch_router import RouterArgs
+    else:
+        from sglang_router.launch_router import RouterArgs
 
     from slime.utils.http_utils import run_router
 

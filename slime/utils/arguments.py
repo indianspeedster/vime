@@ -206,6 +206,37 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
         # rollout
         def add_rollout_arguments(parser):
             parser.add_argument(
+                "--rollout-backend",
+                type=str,
+                choices=["sglang", "vllm"],
+                default="vllm",
+                help="Backend for rollout inference service.",
+            )
+            parser.add_argument(
+                "--vllm-gpu-memory-utilization",
+                type=float,
+                default=0.55,
+                help="GPU memory utilization target for vLLM server.",
+            )
+            parser.add_argument(
+                "--vllm-enforce-eager",
+                action="store_true",
+                default=False,
+                help="Enable --enforce-eager when launching vLLM server.",
+            )
+            parser.add_argument(
+                "--vllm-weight-sync-mode",
+                type=str,
+                choices=["auto", "native", "reload"],
+                default="auto",
+                help=(
+                    "vLLM weight sync policy: 'native' launches vLLM with --weight-transfer-config and "
+                    "init_weight_transfer_engine (Megatron NCCL / NcclBridge sync). "
+                    "'reload' / 'auto' skip native init here (reload-on-continue or other fallbacks may apply)."
+                ),
+            )
+
+            parser.add_argument(
                 "--hf-checkpoint",
                 type=str,
                 default=None,
@@ -429,6 +460,23 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 default=1,
                 help="Interval for updating the weights",
             )
+            _vllm_packed = parser.add_mutually_exclusive_group()
+            _vllm_packed.add_argument(
+                "--vllm-weight-sync-packed",
+                dest="vllm_weight_sync_packed",
+                action="store_true",
+                help=(
+                    "When rollout-backend is vllm: use one-shot packed weight transfer for dense models (no MoE experts). "
+                    "Automatically disabled for MoE or compressed-tensors quantization."
+                ),
+            )
+            _vllm_packed.add_argument(
+                "--no-vllm-weight-sync-packed",
+                dest="vllm_weight_sync_packed",
+                action="store_false",
+                help="Disable vLLM packed weight sync; use per-bucket NCCL via NcclBridge instead.",
+            )
+            parser.set_defaults(vllm_weight_sync_packed=True)
             parser.add_argument(
                 "--keep-old-actor",
                 action="store_true",
@@ -1767,6 +1815,12 @@ def slime_validate_args(args):
 
     if args.eval_function_path is None:
         args.eval_function_path = args.rollout_function_path
+    
+    if args.rollout_backend == "vllm":
+        if args.rollout_function_path == "slime.rollout.sglang_rollout.generate_rollout":
+            args.rollout_function_path = "slime.rollout.vllm_rollout.generate_rollout"
+        if args.eval_function_path == "slime.rollout.sglang_rollout.generate_rollout":
+            args.eval_function_path = "slime.rollout.vllm_rollout.generate_rollout"
 
     if args.num_steps_per_rollout is not None:
         global_batch_size = args.rollout_batch_size * args.n_samples_per_prompt // args.num_steps_per_rollout

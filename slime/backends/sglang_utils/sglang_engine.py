@@ -404,8 +404,16 @@ class SGLangEngine(RayActor):
             pass
 
     def update_weights_from_distributed(
-        self, names, dtypes, shapes, group_name, flush_cache=False, weight_version: str | None = None
+        self,
+        names,
+        dtypes,
+        shapes,
+        group_name,
+        flush_cache=False,
+        weight_version: str | None = None,
+        packed: bool = False,
     ):
+        del packed
         payload = {
             "names": names,
             "dtypes": [str(dtype).replace("torch.", "") for dtype in dtypes],
