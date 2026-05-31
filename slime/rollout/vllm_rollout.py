@@ -907,6 +907,8 @@ async def eval_rollout_single_dataset(
             sample = copy.deepcopy(prompt_sample)
             sample.index = sample_index
             sample_index += 1
+            # Keep sticky routing scoped to this request only.
+            sample.session_id = str(uuid.uuid4())
             sample.metadata = dataset_cfg.inject_metadata(getattr(sample, "metadata", None))
             sample.generate_function_path = getattr(dataset_cfg, "custom_generate_function_path", None)
             sampling_params = base_sampling_params
