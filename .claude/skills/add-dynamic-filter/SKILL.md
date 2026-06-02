@@ -1,6 +1,6 @@
 ---
 name: add-dynamic-filter
-description: Guide for adding dynamic/filter hooks in slime rollout pipeline. Use when user wants sample-group selection during rollout, buffer filtering before training, or per-sample masking/processing hooks.
+description: Guide for adding dynamic/filter hooks in the vime rollout pipeline. Use when user wants sample-group selection during rollout, buffer filtering before training, or per-sample masking/processing hooks.
 ---
 
 # Add Dynamic Filter
@@ -27,7 +27,7 @@ Use this skill when:
 
 ### Step 2: Implement the Function Signature
 
-Dynamic sampling filter (called in `slime/rollout/vllm_rollout.py`):
+Dynamic sampling filter (called in `vime/rollout/vllm_rollout.py`; one group = `list[Sample]` with length `n_samples_per_prompt`):
 
 ```python
 def filter_function(args, samples, **kwargs):
@@ -37,22 +37,24 @@ def filter_function(args, samples, **kwargs):
 Preferred return type:
 
 ```python
-from slime.rollout.filter_hub.base_types import DynamicFilterOutput
+from vime.rollout.filter_hub.base_types import DynamicFilterOutput
 
 return DynamicFilterOutput(keep=True, reason=None)
 ```
 
-Buffer filter (called in `slime/rollout/data_source.py`):
+Buffer filter (called in `vime/rollout/data_source.py`; default is `vime.rollout.data_source.pop_first`):
 
 ```python
-def buffer_filter(args, rollout_id, buffer, num_samples):
+def buffer_filter(args, rollout_id, buffer: list[list[Sample]], num_samples: int) -> list[list[Sample]]:
     return selected_groups
 ```
 
-Rollout sample filter:
+`rollout_id` is often `None` when the buffer invokes the filter.
+
+Rollout sample filter (mutates `Sample.remove_sample` on the train batch):
 
 ```python
-def rollout_sample_filter(args, samples):
+def filter_function(args, groups: list[list[Sample]]) -> None:
     # modify sample.remove_sample in-place where needed
 ```
 
@@ -74,9 +76,9 @@ def process_all_samples(args, all_samples, data_source):
 Example wiring:
 
 ```bash
---dynamic-sampling-filter-path slime.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std
+--dynamic-sampling-filter-path vime.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std
 --buffer-filter-path <module>.buffer_filter
---rollout-sample-filter-path <module>.rollout_sample_filter
+--rollout-sample-filter-path <module>.filter_function
 --rollout-all-samples-process-path <module>.process_all_samples
 ```
 
@@ -95,7 +97,7 @@ Example wiring:
 
 ## Reference Locations
 
-- Dynamic filter types: `slime/rollout/filter_hub/base_types.py`
-- Dynamic filter example: `slime/rollout/filter_hub/dynamic_sampling_filters.py`
-- Rollout generation hook points: `slime/rollout/vllm_rollout.py`
-- Buffer filter hook point: `slime/rollout/data_source.py`
+- Dynamic filter types: `vime/rollout/filter_hub/base_types.py`
+- Dynamic filter example: `vime/rollout/filter_hub/dynamic_sampling_filters.py`
+- Rollout generation hook points: `vime/rollout/vllm_rollout.py`
+- Buffer filter hook point: `vime/rollout/data_source.py`

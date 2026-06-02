@@ -1,11 +1,11 @@
 ---
 name: add-tests-and-ci
-description: Guide for adding or updating slime tests and CI wiring. Use when tasks require new test cases, CI registration, test matrix updates, or workflow template changes.
+description: Guide for adding or updating vime tests and CI wiring. Use when tasks require new test cases, CI registration, test matrix updates, or workflow template changes.
 ---
 
 # Add Tests and CI
 
-Add reliable tests and integrate them with slime CI flow.
+Add reliable tests and integrate them with vime CI flow.
 
 ## When to Use
 
@@ -20,9 +20,10 @@ Use this skill when:
 
 ### Step 1: Pick the Right Test Pattern
 
-- Follow existing naming: `tests/test_<feature>.py`
+- Follow existing naming: `tests/test_<feature>.py` or `tests/plugin_contracts/test_*.py`
 - Start from nearest existing test file for your model/path
 - Keep test scope small and behavior-focused
+- Plugin hook contracts under `tests/plugin_contracts/` validate `--rollout-function-path`, filters, and `--custom-rm-path` loading (no GPU; PR label `run-ci-plugin-contracts`)
 
 ### Step 2: Keep CI Compatibility
 
@@ -62,6 +63,7 @@ Include:
 - Adding tests without following existing constants/conventions
 - Making tests too large or non-deterministic
 - Skipping local validation and relying only on remote CI
+- Using `slime.*` module paths in test CLI strings (use `vime.*`)
 
 ## Reference Locations
 
