@@ -57,7 +57,6 @@ def execute():
         "--label-key answer "
         '--multimodal-keys \'{"image": "images"}\' '
         "--rm-type math "
-        "--apply-chat-template "
         "--custom-generate-function-path examples.geo3k_vlm_multi_turn.rollout.generate "
         "--custom-config-path examples/geo3k_vlm_multi_turn/geo3k_vlm_multi_turn_config.yaml "
         "--rollout-shuffle "
@@ -99,14 +98,21 @@ def execute():
     cudagraph_sizes = " ".join(map(str, [1, 2, 4, 8] + list(range(16, 257, 8))))
     vllm_args = (
         "--rollout-num-gpus-per-engine 1 "
-        "--vllm-gpu-memory-utilization 0.6 "
+        "--vllm-router-policy consistent_hash "
+        "--vllm-max-model-len 32768 "
+        "--vllm-gpu-memory-utilization 0.9 "
+        "--vllm-generation-config vllm "
         f"--vllm-cudagraph-capture-sizes {cudagraph_sizes} "
+        # vLLM 0.22.0 needs eager mode for Qwen3-VL logprob parity. This can be
+        # disabled after vLLM includes https://github.com/vllm-project/vllm/pull/43617.
+        "--vllm-enforce-eager "
+        "--vllm-logprobs-mode processed_logprobs "
     )
 
     backend_args = (
         "--train-backend megatron "
         f"--load /root/models/{MODEL_NAME} "
-        "--tensor-model-parallel-size 4 "
+        "--tensor-model-parallel-size 1 "
         "--sequence-parallel "
         "--pipeline-model-parallel-size 1 "
         "--context-parallel-size 1 "
