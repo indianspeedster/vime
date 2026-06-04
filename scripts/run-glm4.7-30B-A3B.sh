@@ -1,6 +1,8 @@
 #!/bin/bash
 
 # for rerun the task
+pkill -9 -f "vllm serve"
+sleep 3
 ray stop --force
 pkill -9 ray
 pkill -9 python
@@ -13,6 +15,8 @@ set -ex
 # will prevent ray from buffering stdout/stderr
 export PYTHONBUFFERED=16
 
+unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
+
 NVLINK_COUNT=$(nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l)
 if [ "$NVLINK_COUNT" -gt 0 ]; then
     HAS_NVLINK=1
@@ -21,70 +25,63 @@ else
 fi
 echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
-if command -v nvidia-smi >/dev/null 2>&1; then
-    DETECTED_GPUS=$(nvidia-smi -L 2>/dev/null | wc -l | tr -d ' ')
-else
-    DETECTED_GPUS=0
-fi
-NUM_GPUS=${NUM_GPUS:-${DETECTED_GPUS}}
-if [ -z "$NUM_GPUS" ] || [ "$NUM_GPUS" -le 0 ]; then
-    NUM_GPUS=8
-fi
-echo "NUM_GPUS: $NUM_GPUS"
-
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-VIME_ROOT="$(cd -- "${SCRIPT_DIR}/.." &>/dev/null && pwd)"
-source "${SCRIPT_DIR}/models/qwen3-4B.sh"
+source "${SCRIPT_DIR}/../scripts/models/glm4.7-30B-A3B.sh"
 
 CKPT_ARGS=(
-   --hf-checkpoint /root/Qwen3-4B
-   #--hf-checkpoint /root/Qwen3-4B-FP8
-   --ref-load /root/Qwen3-4B_torch_dist
-   --load /root/Qwen3-4B_vime/
-   --save /root/Qwen3-4B_vime/
-   --save-interval 20
+   --hf-checkpoint $BASE_DIR/GLM-4.7-Flash
+   --ref-load $BASE_DIR/GLM-4.7-Flash_torch_dist/
 )
 
 ROLLOUT_ARGS=(
-   --prompt-data /root/dapo-math-17k/dapo-math-17k.jsonl
+   --prompt-data $BASE_DIR/dapo-math-17k/dapo-math-17k.jsonl
    --input-key prompt
    --label-key label
    --apply-chat-template
    --rollout-shuffle
-   --rm-type deepscaler
-   --num-rollout 3000
-   --rollout-batch-size 32
-   --n-samples-per-prompt 8
-   --rollout-max-response-len 8192
-   --rollout-temperature 1
 
-   --global-batch-size 256
-   --balance-data
+   --rm-type deepscaler
+
+   --num-rollout 3000
+   --rollout-batch-size 128
+   --n-samples-per-prompt 8
+   --rollout-max-response-len 32768
+   --rollout-temperature 1.0
+
+   --global-batch-size 1024
+   #--balance-data
 )
 
 EVAL_ARGS=(
    --eval-interval 20
-   --eval-prompt-data aime /root/aime-2024/aime-2024.jsonl
-   --n-samples-per-eval-prompt 16
-   --eval-max-response-len 16384
-   --eval-top-p 1
+   --eval-prompt-data aime24 $BASE_DIR/rl_data/aime-2024.jsonl
+   --n-samples-per-eval-prompt 2
+   --eval-max-response-len 32768
+   --eval-temperature 1.0
+   --eval-top-p 0.95
 )
 
 PERF_ARGS=(
    --tensor-model-parallel-size 2
    --sequence-parallel
-   --pipeline-model-parallel-size 1
-   --context-parallel-size 1
-   --expert-model-parallel-size 1
+   --pipeline-model-parallel-size 2
+   --context-parallel-size 2
+   --expert-model-parallel-size 8
    --expert-tensor-parallel-size 1
+   --decoder-last-pipeline-num-layers 23
 
    --recompute-granularity full
    --recompute-method uniform
    --recompute-num-layers 1
 
-   # --micro-batch-size 1
    --use-dynamic-batch-size
-   --max-tokens-per-gpu 9216
+   --max-tokens-per-gpu 32768
+)
+
+MTP_ARGS=(
+   --mtp-num-layers 1
+   --enable-mtp-training
+   --mtp-loss-scaling-factor 0.2
 )
 
 GRPO_ARGS=(
@@ -92,9 +89,8 @@ GRPO_ARGS=(
    --use-kl-loss
    --kl-loss-coef 0.00
    --kl-loss-type low_var_kl
+   --kl-coef 0.00
    --entropy-coef 0.00
-   --eps-clip 0.2
-   --eps-clip-high 0.28
 )
 
 OPTIMIZER_ARGS=(
@@ -104,18 +100,27 @@ OPTIMIZER_ARGS=(
    --weight-decay 0.1
    --adam-beta1 0.9
    --adam-beta2 0.98
+
+   --optimizer-cpu-offload
+   --overlap-cpu-optimizer-d2h-h2d
+   --use-precision-aware-optimizer
 )
 
 WANDB_ARGS=(
    # --use-wandb
    # --wandb-project vime-dev
-   # --wandb-group qwen3-4B-test
-   # --wandb-key ${WANDB_KEY}
+   # --wandb-group glm4.7-flash
 )
 
 VLLM_ARGS=(
-   --rollout-num-gpus-per-engine 2
-   --vllm-gpu-memory-utilization 0.7
+   --rollout-num-gpus-per-engine 8
+   --vllm-gpu-memory-utilization 0.8
+   --vllm-data-parallel-size 8
+
+   # mtp
+   --vllm-speculative-config '{"method":"mtp","num_speculative_tokens":3}'
+   --vllm-max-cudagraph-capture-size 64
+   --vllm-max-num-seqs 512
 )
 
 MISC_ARGS=(
@@ -127,17 +132,19 @@ MISC_ARGS=(
    --attention-softmax-in-fp32
    # need to comment this when using model with MLA
    --attention-backend flash
-   --train-memory-margin-bytes 2147483648
+
+   --moe-token-dispatcher-type flex
+   --moe-enable-deepep
 )
 
 # launch the master node of ray in container
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus ${NUM_GPUS} --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
+ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
 
 # Build the runtime environment JSON with proper variable substitution
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
-    \"PYTHONPATH\": \"${VIME_ROOT}:/root/Megatron-LM/\",
+    \"PYTHONPATH\": \"/root/Megatron-LM/\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
     \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\"
   }
@@ -146,9 +153,8 @@ RUNTIME_ENV_JSON="{
 ray job submit --address="http://127.0.0.1:8265" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
    -- python3 train.py \
-   --train-backend megatron \
    --actor-num-nodes 1 \
-   --actor-num-gpus-per-node ${NUM_GPUS} \
+   --actor-num-gpus-per-node 8 \
    --colocate \
    ${MODEL_ARGS[@]} \
    ${CKPT_ARGS[@]} \
@@ -159,4 +165,5 @@ ray job submit --address="http://127.0.0.1:8265" \
    ${PERF_ARGS[@]} \
    ${EVAL_ARGS[@]} \
    ${VLLM_ARGS[@]} \
-   ${MISC_ARGS[@]}
+   ${MISC_ARGS[@]} \
+   ${MTP_ARGS[@]}

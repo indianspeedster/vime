@@ -121,12 +121,6 @@ def _get_vllm_dp_size(args) -> int:
 
 
 def _resolve_vllm_parallel_sizes(args, *, gpus_per_engine: int) -> tuple[int, int]:
-    # Derive TP per-engine from THIS engine's GPU count (matches upstream slime's
-    # sglang_engine: tp = _gpus_per_engine // pp). Deliberately does NOT consult a global
-    # ``args.vllm_tp_size``: validate_args used to set that from the *global*
-    # rollout_num_gpus_per_engine, which shadowed this per-engine value and made a
-    # heterogeneous per-group engine (e.g. a tp=2 group) launch with the global TP —
-    # desyncing the weight-transfer rendezvous (the 300s "3/4 clients joined" hang).
     pp = _get_vllm_pp_size(args)
     dp = _get_vllm_dp_size(args)
     if dp != 1:
@@ -500,16 +494,7 @@ def _wait_worker_process_alive(process: multiprocessing.Process, timeout_s: floa
 
 
 def _wait_server_healthy(base_url: str, process: multiprocessing.Process | None) -> None:
-    """Wait until the vLLM server responds on ``GET /health`` (no time limit, SGLang-style).
-
-    Loops until /health returns 200, or — for a managed subprocess — until it dies (fail fast via
-    ``process.is_alive()``). There is no overall deadline, so a slow-but-healthy startup (a large
-    MoE / DP engine loading + compiling + capturing CUDA graphs across replicas) is never
-    spuriously timed out. The per-probe ``timeout=3`` bounds each individual request so a single
-    stuck socket cannot wedge the loop. In external mode (``process is None``) there is no liveness
-    signal, so a permanently unreachable URL loops indefinitely by design (the external engine is
-    caller-managed). Mirrors slime's SGLang backend _wait_server_healthy.
-    """
+    """Wait until the vLLM server responds on ``GET /health``."""
     while True:
         try:
             response = requests.get(f"{base_url}/health", timeout=3)
@@ -706,12 +691,7 @@ class VLLMEngine(RayActor):
             _wait_worker_process_alive(self.process)
 
     def _make_request(self, endpoint: str, payload: dict | None = None, *, timeout: float) -> dict | None:
-        """Control-plane POST returning parsed JSON (mirrors SGLang's ``_make_request``).
-
-        The single choke point for control-plane POSTs: headless workers (node_rank>0) own no
-        HTTP server, so they no-op to None; otherwise POST and parse via the shared
-        ``_response_json`` (also reused by the query-param endpoints /sleep, /wake_up, ...).
-        """
+        """Control-plane POST returning parsed JSON."""
         if self.node_rank != 0:
             return None
         url = f"{self._http_base()}/{endpoint.lstrip('/')}"
@@ -906,7 +886,7 @@ class VLLMEngine(RayActor):
         """``POST /finish_weight_update`` — signals vLLM to exit IPC weight-update mode.
 
         Purely a state-machine bookend now; ``_weight_version`` is recorded by
-        ``update_weights_from_tensor`` (the IPC data-carrying RPC), matching slime's
+        ``update_weights_from_tensor`` (the IPC data-carrying RPC), matching vime's
         single-RPC version-with-data semantics.
         """
         return self._make_request("finish_weight_update", {}, timeout=self._weight_transfer_http_timeout())
