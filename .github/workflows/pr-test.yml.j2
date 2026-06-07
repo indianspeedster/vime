@@ -29,6 +29,7 @@
         {'test_file': 'test_qwen3_4B_ppo.py', 'num_gpus': 8},
         {'test_file': 'test_qwen3_4B_ppo_disaggregate.py', 'num_gpus': 8},
         {'test_file': 'test_qwen3_4B_ppo_train_critic_only.py', 'num_gpus': 8},
+        {'test_file': 'test_qwen3_4B_streaming_partial_rollout.py', 'num_gpus': 8},
         {'test_file': 'test_moonlight_16B_A3B.py', 'num_gpus': 8},
         {'test_file': 'test_moonlight_16B_A3B_r3.py', 'num_gpus': 8, 'enable_eval': '0'},
         {'test_file': 'test_qwen2.5_0.5B_debug_rollout_then_train.py', 'num_gpus': 8},
@@ -65,6 +66,25 @@
         {'test_file': 'test_rm_gpqa.py', 'num_gpus': 0},
         {'test_file': 'test_rm_math.py', 'num_gpus': 0},
         {'test_file': 'test_rm_math_dapo.py', 'num_gpus': 0},
+        {'test_file': 'test_dp_schedule.py', 'num_gpus': 0},
+        {'test_file': 'test_cp_utils.py', 'num_gpus': 0},
+        {'test_file': 'test_metric_report.py', 'num_gpus': 0},
+        {'test_file': 'test_metric_report_dist.py', 'num_gpus': 0},
+        {'test_file': 'test_loss_cp_invariance.py', 'num_gpus': 0},
+        {'test_file': 'test_sample.py', 'num_gpus': 0},
+        {'test_file': 'utils/test_hf_checkpoint_saver.py', 'num_gpus': 0},
+      ],
+    },
+
+    'agent-adapter-test': {
+      'label': 'run-ci-agent-adapter',
+      'always': True,
+      'cpu': True,
+      'extra_pip_deps': 'openai openai-agents anthropic',
+      'tests': [
+        {'test_file': 'test_agent_trajectory.py', 'num_gpus': 0},
+        {'test_file': 'test_agent_adapters.py', 'num_gpus': 0},
+        {'test_file': 'test_agent_sdk_adapters.py', 'num_gpus': 0},
       ],
     },
 
@@ -182,6 +202,9 @@ jobs:
         run: |
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install pytest numpy packaging pyyaml omegaconf tqdm httpx pybase64 pylatexenc sympy aiohttp pillow
+<% if config.get('extra_pip_deps') %>
+          pip install << config.extra_pip_deps >>
+<% endif %>
 
       - name: Install
         shell: bash
