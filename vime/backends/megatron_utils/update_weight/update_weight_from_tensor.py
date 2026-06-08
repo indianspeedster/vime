@@ -25,6 +25,7 @@ from ray import ObjectRef
 from ray.actor import ActorHandle
 
 from vime.utils.distributed_utils import get_gloo_group
+from vime.utils.common import is_npu
 
 from .hf_weight_iterator_base import HfWeightIteratorBase
 from .update_weight_from_distributed import (
@@ -393,18 +394,32 @@ class _VLLMHijack:
 
     @staticmethod
     def hijack() -> None:
-        from vllm.distributed.weight_transfer.ipc_engine import IPCWeightTransferEngine
+        if is_npu():
+            from vllm_ascend.distributed.weight_transfer.npu_ipc_engine import NPUIPCWeightTransferEngine
 
-        if getattr(IPCWeightTransferEngine, "_vime_receive_patched", False):
-            return
+            if getattr(NPUIPCWeightTransferEngine, "_vime_receive_patched", False):
+                return
 
-        _orig = IPCWeightTransferEngine.receive_weights
+            _orig = NPUIPCWeightTransferEngine.receive_weights
 
-        def _vime_receive_weights(self, update_info, load_weights, _orig=_orig):
-            _orig(self, update_info, load_weights)
+            def _vime_receive_weights(self, update_info, load_weights, _orig=_orig):
+                _orig(self, update_info, load_weights)
 
-        IPCWeightTransferEngine.receive_weights = _vime_receive_weights
-        IPCWeightTransferEngine._vime_receive_patched = True  # type: ignore[attr-defined]
+            NPUIPCWeightTransferEngine.receive_weights = _vime_receive_weights
+            NPUIPCWeightTransferEngine._vime_receive_patched = True  # type: ignore[attr-defined]
+        else:
+            from vllm.distributed.weight_transfer.ipc_engine import IPCWeightTransferEngine
+
+            if getattr(IPCWeightTransferEngine, "_vime_receive_patched", False):
+                return
+
+            _orig = IPCWeightTransferEngine.receive_weights
+
+            def _vime_receive_weights(self, update_info, load_weights, _orig=_orig):
+                _orig(self, update_info, load_weights)
+
+            IPCWeightTransferEngine.receive_weights = _vime_receive_weights
+            IPCWeightTransferEngine._slime_receive_patched = True  # type: ignore[attr-defined]
 
 
 class vLLMColocateWorkerExtension:
