@@ -1,87 +1,58 @@
 #!/bin/bash
 
-if grep -q $'\r' "$0" 2>/dev/null; then
-  exec bash <(sed 's/\r$//' "$0") "$@"
-fi
-
-pkill -9 vllm 2>/dev/null || true
+# for rerun the task
+pkill -9 vllm
 sleep 3
-ray stop --force 2>/dev/null || true
-pkill -9 ray 2>/dev/null || true
-pkill -9 -f 'python3 train.py' 2>/dev/null || true
+ray stop --force
+pkill -9 ray
+pkill -9 python
 sleep 3
+pkill -9 ray
+pkill -9 python
 
 set -ex
 
+# will prevent ray from buffering stdout/stderr
 export PYTHONUNBUFFERED=1
-export PYTHONBUFFERED=16
-
-unset PYTORCH_CUDA_ALLOC_CONF PYTORCH_ALLOC_CONF
-
-export TAU_BENCH_MOCK=1
-export TAU_BENCH_MAX_STEPS=10
 
 NVLINK_COUNT=$(nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l)
 if [ "$NVLINK_COUNT" -gt 0 ]; then
-  HAS_NVLINK=1
+    HAS_NVLINK=1
 else
-  HAS_NVLINK=0
+    HAS_NVLINK=0
 fi
 echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
-ACTOR_GPUS_PER_NODE="${ACTOR_GPUS_PER_NODE:-4}"
-ROLLOUT_NUM_GPUS="${ROLLOUT_NUM_GPUS:-4}"
-ROLLOUT_GPUS_PER_ENGINE="${ROLLOUT_GPUS_PER_ENGINE:-1}"
-TOTAL_GPUS="$((ACTOR_GPUS_PER_NODE + ROLLOUT_NUM_GPUS))"
-echo "TOTAL_GPUS (ray): ${TOTAL_GPUS}  (actor=${ACTOR_GPUS_PER_NODE}, rollout=${ROLLOUT_NUM_GPUS}, per_engine=${ROLLOUT_GPUS_PER_ENGINE})"
-
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-VIME_DIR="$(cd -- "${SCRIPT_DIR}/../.." &>/dev/null && pwd)"
-TAU_EXAMPLE="${SCRIPT_DIR}"
-TAU_BENCH_SRC="${TAU_BENCH_SRC:-/root/tau-bench-src}"
-TAU_DATA_DIR="${TAU_DATA_DIR:-/root/tau-bench}"
-
-cd "${VIME_DIR}"
-
-export MODEL_ARGS_ROTARY_BASE=5000000
-source "${VIME_DIR}/scripts/models/qwen3-4B-Instruct-2507.sh"
-
-HF_CKPT="${HF_CKPT:-/root/Qwen3-4B-Instruct-2507}"
-REF_LOAD="${REF_LOAD:-/root/Qwen3-4B-Instruct-2507_torch_dist}"
-SAVE_DIR="${SAVE_DIR:-/root/Qwen3-4B-Instruct_tau_bench}"
-
-LOG_ROOT="${LOG_ROOT:-/root/logs}"
-TS=$(date +%Y%m%d_%H%M%S)
-export TENSORBOARD_DIR="${LOG_ROOT}/tb_qwen3_4b_tau_bench_${TS}"
-LOG_FILE="${LOG_ROOT}/train_qwen3_4b_tau_bench_${TS}.log"
-mkdir -p "${TENSORBOARD_DIR}" "${LOG_ROOT}"
+source "${SCRIPT_DIR}/../../scripts/models/qwen3-4B-Instruct-2507.sh"
 
 CKPT_ARGS=(
-   --hf-checkpoint "${HF_CKPT}"
-   --ref-load "${REF_LOAD}"
-   --save "${SAVE_DIR}"
+   --hf-checkpoint /root/Qwen3-4B-Instruct-2507/
+   --ref-load /root/Qwen3-4B-Instruct-2507_torch_dist/
+   --load /root/Qwen3-4B-Instruct-2507_vime/
+   --save /root/Qwen3-4B-Instruct-2507_vime/
+   --save-interval 20
 )
 
-PROMPT_DATA="${PROMPT_DATA:-${TAU_DATA_DIR}/retail_train_tasks.jsonl}"
 ROLLOUT_ARGS=(
-   --prompt-data "${PROMPT_DATA}"
+   --prompt-data /root/tau-bench/retail_train_tasks.jsonl
    --input-key index
    --rollout-shuffle
-   --num-rollout 50
-   --rollout-batch-size 16
-   --n-samples-per-prompt 4
-   --rollout-max-response-len 4096
-   --rollout-max-context-len 16384
-   --rollout-temperature 0.7
-   --global-batch-size 64
+   --num-rollout 500
+   --rollout-batch-size 32
+   --n-samples-per-prompt 8
+   --rollout-max-response-len 1024
+   --rollout-temperature 1
+   --global-batch-size 256
+   --dynamic-sampling-filter-path vime.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std
    --balance-data
 )
 
 EVAL_ARGS=(
    --eval-interval 5
-   --eval-prompt-data retail-dev "${TAU_DATA_DIR}/retail_dev_tasks.jsonl"
+   --eval-prompt-data retail-dev /root/tau-bench/retail_dev_tasks.jsonl
    --n-samples-per-eval-prompt 1
-   --eval-max-response-len 4096
+   --eval-max-response-len 1024
    --eval-top-k 1
 )
 
@@ -102,16 +73,16 @@ PERF_ARGS=(
 GRPO_ARGS=(
    --advantage-estimator grpo
    --use-kl-loss
-   --kl-loss-coef 0.001
+   --kl-loss-coef 0.00
    --kl-loss-type low_var_kl
-   --entropy-coef 0.01
+   --entropy-coef 0.00
    --eps-clip 0.2
    --eps-clip-high 0.28
 )
 
 OPTIMIZER_ARGS=(
    --optimizer adam
-   --lr 5e-6
+   --lr 1e-6
    --lr-decay-style constant
    --weight-decay 0.1
    --adam-beta1 0.9
@@ -119,62 +90,55 @@ OPTIMIZER_ARGS=(
 )
 
 VLLM_ARGS=(
-   --rollout-num-gpus "${ROLLOUT_NUM_GPUS}"
-   --rollout-num-gpus-per-engine "${ROLLOUT_GPUS_PER_ENGINE}"
+   --rollout-num-gpus-per-engine 1
    --vllm-gpu-memory-utilization 0.7
-   --vllm-max-model-len 16384
-)
-export VIME_VLLM_SERVER_HEALTH_TIMEOUT_SEC=900
-
-CUSTOM_ARGS=(
-   --custom-generate-function-path generate_with_tau.generate
-   --custom-rm-path generate_with_tau.batched_tau_bench_rm
+   # If gemini API reports concurrency limit error, set this parameter to reduce the concurrency
+   # --vllm-server-concurrency 32
 )
 
 MISC_ARGS=(
+   # default dropout in megatron is 0.1
    --attention-dropout 0.0
    --hidden-dropout 0.0
+   # should be good for model performance
    --accumulate-allreduce-grads-in-fp32
    --attention-softmax-in-fp32
+   # need to comment this when using model with MLA
    --attention-backend flash
-   --train-memory-margin-bytes 2147483648
-   --use-tensorboard
 )
 
-VIME_PYTHONPATH="${TAU_EXAMPLE}:${VIME_DIR}:/root/Megatron-LM:${TAU_BENCH_SRC}"
+CUSTOM_ARGS=(
+   --custom-generate-function-path generate_with_tau.generate
+)
+# launch the master node of ray in container
+export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
 
-echo "VIME_DIR=${VIME_DIR}"
-echo "TAU_EXAMPLE=${TAU_EXAMPLE}"
-echo "HF_CKPT=${HF_CKPT} REF_LOAD=${REF_LOAD} SAVE=${SAVE_DIR}"
-echo "PROMPT_DATA=${PROMPT_DATA}"
+# If you want more or less GPUs, change this parameter
+NUM_GPUS=2
+ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus ${NUM_GPUS} --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265 --temp-dir /root/shared/ray_temp
 
-export MASTER_ADDR=127.0.0.1
-ray start --head \
-  --node-ip-address "${MASTER_ADDR}" \
-  --num-gpus "${TOTAL_GPUS}" \
-  --disable-usage-stats \
-  --dashboard-host=0.0.0.0 \
-  --dashboard-port=8265
-
-unset http_proxy https_proxy
-
-RUNTIME_ENV_JSON='{"env_vars":{"PYTHONPATH":"'"${VIME_PYTHONPATH}"'","CUDA_DEVICE_MAX_CONNECTIONS":"1","NCCL_NVLS_ENABLE":"'"${HAS_NVLINK}"'","TENSORBOARD_DIR":"'"${TENSORBOARD_DIR}"'","VIME_VLLM_SERVER_HEALTH_TIMEOUT_SEC":"900","TAU_BENCH_MOCK":"1","TAU_BENCH_MAX_STEPS":"10"}}'
+RUNTIME_ENV_JSON="{
+  \"env_vars\": {
+    \"PYTHONPATH\": \"/root/Megatron-LM/:${SCRIPT_DIR}\",
+    \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\"
+  }
+}"
 
 ray job submit --address="http://127.0.0.1:8265" \
-   --working-dir "${VIME_DIR}" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
    -- python3 train.py \
-   --train-backend megatron \
    --actor-num-nodes 1 \
-   --actor-num-gpus-per-node "${ACTOR_GPUS_PER_NODE}" \
-   "${MODEL_ARGS[@]}" \
-   "${CKPT_ARGS[@]}" \
-   "${ROLLOUT_ARGS[@]}" \
-   "${EVAL_ARGS[@]}" \
-   "${OPTIMIZER_ARGS[@]}" \
-   "${GRPO_ARGS[@]}" \
-   "${PERF_ARGS[@]}" \
-   "${VLLM_ARGS[@]}" \
-   "${CUSTOM_ARGS[@]}" \
-   "${MISC_ARGS[@]}" \
-   2>&1 | tee -a "${LOG_FILE}"
+   --actor-num-gpus-per-node ${NUM_GPUS} \
+   --rollout-num-gpus ${NUM_GPUS} \
+   --colocate \
+   ${MODEL_ARGS[@]} \
+   ${CKPT_ARGS[@]} \
+   ${ROLLOUT_ARGS[@]} \
+   ${OPTIMIZER_ARGS[@]} \
+   ${GRPO_ARGS[@]} \
+   ${DISTRIBUTED_ARGS[@]} \
+   ${PERF_ARGS[@]} \
+   ${EVAL_ARGS[@]} \
+   ${VLLM_ARGS[@]} \
+   ${MISC_ARGS[@]} \
+   ${CUSTOM_ARGS[@]}

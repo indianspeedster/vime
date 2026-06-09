@@ -1,578 +1,153 @@
-"""Tau-bench multi-turn custom rollout for vime (vLLM render + generate).
+"""
+Tau-Bench Integration for vime Training
 
-Combines tau env interaction, tool parsing (``vllm_tool_parser``), and vLLM
-multi-turn rollout in one entry point: ``generate_with_tau.generate``.
+This module provides the main interface for training agents in tau-bench environments
+using the vime framework. It handles agent-environment interactions and converts
+results to the format expected by vime's training pipeline.
 """
 
-from __future__ import annotations
-
-import json
 import logging
 import os
-import uuid
 from typing import Any
 
-from openai_tool_adapter import create_openai_adapter
-from tau_bench.agents.tool_calling_agent import RESPOND_ACTION_NAME
 from tau_bench.envs import get_env
-from tau_bench.types import Action, RunConfig
+from tau_bench.types import RunConfig
+from trainable_agents import InteractionResult, Status, agent_factory
 
-from vime.rollout.vllm_rollout import (
-    GenerateState,
-    _apply_vllm_routed_experts,
-    _build_inference_sampling_params,
-    _coerce_flat_int_token_ids,
-    _inference_generate_tokens_and_logprobs,
-    _mm_render_response_to_generate_body,
-)
-from vime.utils.http_utils import post
 from vime.utils.types import Sample
 
+# Set up logger for this module
 logger = logging.getLogger(__name__)
 
-# Defaults formerly in tau_bench_config.yaml
-_TAU_DEFAULT_MAX_TURNS = 10
+# Tau-bench configuration
+TAU_CONFIGS = {
+    "env": "retail",  # Select between ["retail", "airline"]
+    "agent": "tool-calling",  # Select between ["tool-calling", "act", "react", "few-shot"]
+    "user_model": "gemini-2.5-flash-lite",  # Cheap Model for user simulator
+    "task_split": "train",  # Select between ["train", "test", "dev"] for retail
+    "user_strategy": "llm",  # Select between ["llm", "react", "verify", "reflection"]
+    "model_provider": "auto_router",  # Unused, required
+    "model": "qwen3-4b",  # Unused, required
+    "user_model_provider": "gemini",
+}
+# Replace with your actual API key for user sim
+GEMINI_API_KEY = "NONE"
+os.environ["GEMINI_API_KEY"] = GEMINI_API_KEY
+tau_config = RunConfig(**TAU_CONFIGS)
 
 
-def _ensure_tau_args(args: Any) -> None:
-    if getattr(args, "max_turns", None) is None:
-        args.max_turns = _TAU_DEFAULT_MAX_TURNS
-    for key, value in (
-        ("tau_env", "retail"),
-        ("tau_user_model", "openai/local-qwen3-4b"),
-        ("tau_user_model_provider", "openai"),
-        ("tau_task_split", "train"),
-        ("tau_user_strategy", "llm"),
-    ):
-        if getattr(args, key, None) is None:
-            setattr(args, key, value)
+def res_to_sample(res: InteractionResult, task_index: int) -> Sample:
+    """
+    Convert InteractionResult to Sample format for vime training.
 
+    This function transforms the tau-bench interaction result into the format
+    expected by vime's training pipeline, handling status mapping and response
+    length calculation.
 
-async def tau_bench_rm(args, sample: Sample, **kwargs) -> float:
-    return sample.reward if sample.reward is not None else 0.0
+    Args:
+        res: InteractionResult from tau-bench agent
+        task_index: Index of the task being processed
 
+    Returns:
+        Sample object for vime training
+    """
+    # Map tau-bench status to vime status
+    status_mapping = {
+        Status.COMPLETED: "completed",
+        Status.TRUNCATED: "truncated",
+        Status.ABORTED: "aborted",
+    }
+    status = status_mapping.get(res.status)
 
-async def batched_tau_bench_rm(args, samples, **kwargs) -> list[float] | float:
-    if isinstance(samples, Sample):
-        return samples.reward if samples.reward is not None else 0.0
-    rewards = [s.reward if s.reward is not None else 0.0 for s in samples]
-    max_r = max(rewards) if rewards else 1.0
-    if max_r > 0:
-        rewards = [r / max_r for r in rewards]
-    return rewards
+    # Debug logging for response tracking
+    logger.debug(
+        f"res_to_sample: response_length="
+        f"{res.response_length if hasattr(res, 'response_length') else 'None'}, "
+        f"loss_mask_len={len(res.loss_mask) if res.loss_mask else 'None'}, "
+        f"tokens_len={len(res.tokens) if res.tokens else 'None'}"
+    )
 
+    # Create sample with basic information
+    sample = Sample(
+        index=task_index,
+        prompt=res.prompt,
+        tokens=res.tokens,
+        response=res.response,
+        reward=res.reward,
+        loss_mask=res.loss_mask,
+        status=status,
+        metadata=res.info,
+    )
 
-class TauBenchEnv:
-    def __init__(
-        self,
-        *,
-        tau_config: RunConfig,
-        task_index: int | None = None,
-        max_turns: int = 30,
-    ):
-        self.tau_config = tau_config
-        self.task_index = task_index
-        self.max_turns = max_turns
-        self.turn = 0
-        self.total_reward = 0.0
-        self.info: dict[str, Any] = {}
-        self.env = None
-        self.openai_adapter = None
-        self.successful_tool_calls = 0
-        self.total_tool_calls = 0
-        self.format_correct_calls = 0
-
-    def reset(self):
-        self.turn = 0
-        self.total_reward = 0.0
-        self.info = {}
-        self.successful_tool_calls = 0
-        self.total_tool_calls = 0
-        self.format_correct_calls = 0
-
-        self.env = get_env(
-            env_name=self.tau_config.env,
-            user_strategy=self.tau_config.user_strategy,
-            user_model=self.tau_config.user_model,
-            user_provider=self.tau_config.user_model_provider,
-            task_split=self.tau_config.task_split,
-            task_index=self.task_index,
-        )
-
-        self.openai_adapter = create_openai_adapter(
-            tools_info=self.env.tools_info,
-            parser_type="qwen25",
-        )
-
-        env_reset_res = self.env.reset(task_index=self.task_index) if self.task_index is not None else self.env.reset()
-        observation = env_reset_res.observation
-        self.info = self._to_dict(env_reset_res.info)
-
-        return {
-            "obs_str": observation,
-            "role": "user",
-            "wiki": self.env.wiki,
-            "tools_info": self.env.tools_info,
-        }
-
-    def step(self, response_text: str):
-        self.turn += 1
-        is_final_turn = self.turn >= self.max_turns
-
-        logger.info(
-            f"[env_step_raw] first_20_bytes={response_text[:20].encode('utf-8').hex()}, len={len(response_text)}"
-        )
-        openai_result = self.openai_adapter.parse_response_to_openai_format(response_text)
-
-        if not openai_result["success"]:
-            logger.warning(f"Tool parsing failed: {openai_result.get('error')}")
-            return (
-                {
-                    "obs_str": "Failed to parse tool call. Please try again.",
-                    "role": "tool",
-                },
-                is_final_turn,
-                {"tool_executed": False, "parse_error": openai_result.get("error")},
-            )
-
-        parsed = openai_result["parsed_result"]
-        agent_content, calls = parsed["normal_text"], parsed["calls"]
-        logger.info(f"[env_step] response_text={repr(response_text[:200])}, calls={calls}, turn={self.turn}")
-
-        if calls:
-            self.format_correct_calls += 1
-
-        action = self._call_to_action(calls, agent_content)
-
-        is_tool_call = action.name != RESPOND_ACTION_NAME
-        if is_tool_call:
-            self.total_tool_calls += 1
-
-        try:
-            env_response = self.env.step(action)
-        except Exception as e:
-            logger.warning(f"Environment step failed: {e}")
-            return (
-                {
-                    "obs_str": f"Environment error: {e}",
-                    "role": "tool",
-                },
-                True,
-                {"tool_executed": False, "env_error": str(e)},
-            )
-
-        self.total_reward = env_response.reward
-        self.info.update(self._to_dict(env_response.info))
-
-        obs_lower = env_response.observation.lower() if env_response.observation else ""
-        logger.info(
-            f"[env_step] action={action.name}, is_tool_call={is_tool_call}, obs_start={repr(obs_lower[:50])}, done={env_response.done}"
-        )
-        if is_tool_call and not obs_lower.startswith(("error", "failed", "invalid", "not found")):
-            self.successful_tool_calls += 1
-            logger.info(f"[env_step] successful_tool_calls now={self.successful_tool_calls}")
-
-        if action.name != RESPOND_ACTION_NAME:
-            obs_role = "tool"
+    # Ensure response_length is set correctly
+    if hasattr(res, "response_length"):
+        sample.response_length = res.response_length
+    else:
+        # Fallback: calculate from loss_mask if available
+        if res.loss_mask:
+            # loss_mask only contains response part, so length equals response_length
+            sample.response_length = len(res.loss_mask)
+        elif res.tokens:
+            # If no loss_mask available, use total tokens as fallback
+            sample.response_length = len(res.tokens)
         else:
-            obs_role = "user"
-        obs_content = env_response.observation
+            sample.response_length = 0
+            logger.debug(f"res_to_sample: Set response_length={sample.response_length}")
 
-        done = env_response.done or is_final_turn
-
-        return (
-            {
-                "obs_str": obs_content,
-                "role": obs_role,
-                "reward": env_response.reward,
-            },
-            done,
-            {"tool_executed": True, "action": action.name},
-        )
-
-    def _call_to_action(self, calls: list[Any], text_response: str) -> Action:
-        action = Action(name=RESPOND_ACTION_NAME, kwargs={"content": text_response})
-        if calls:
-            if len(calls) > 1:
-                logger.debug("Multiple tool calls identified, only taking first.")
-            tool_call = calls[0]
-            try:
-                params = (
-                    json.loads(tool_call["parameters"])
-                    if isinstance(tool_call["parameters"], str)
-                    else tool_call["parameters"]
-                )
-                if not isinstance(params, dict):
-                    logger.warning(f"{params} does not follow dict structure for action")
-                else:
-                    action = Action(name=tool_call["name"], kwargs=params)
-            except json.JSONDecodeError as e:
-                logger.warning(f"Failed to parse parameters as JSON: {e}")
-        return action
-
-    def close(self):
-        pass
-
-    def format_observation(self, observation: dict) -> dict:
-        observation = observation or {}
-        content = observation.get("obs_str", "")
-        return {
-            "role": observation.get("role", "user"),
-            "content": content + "\n/no_think" if observation.get("role") == "user" else content,
-        }
-
-    @staticmethod
-    def _to_dict(info: Any) -> dict:
-        if hasattr(info, "model_dump"):
-            return info.model_dump()
-        if isinstance(info, dict):
-            return info
-        return {}
+    return sample
 
 
-def build_env(sample: Sample | None = None, args: Any | None = None, **_: Any) -> TauBenchEnv:
-    user_model = getattr(args, "tau_user_model", "openai/local-qwen3-4b")
-    user_model_provider = getattr(args, "tau_user_model_provider", "openai")
-    user_strategy = getattr(args, "tau_user_strategy", "llm")
+async def generate(args: dict[str, Any], sample: Sample, sampling_params: dict) -> Sample:
+    """
+    Generate a complete agent-environment interaction trajectory for tau-bench.
 
-    vllm_router_host = getattr(args, "vllm_router_ip", "127.0.0.1")
-    vllm_router_port = getattr(args, "vllm_router_port", 3250)
-    vllm_model_name = getattr(args, "vllm_model_name", getattr(args, "hf_checkpoint", ""))
+    This is the main entry point for vime training. It creates a tau-bench
+    environment, initializes a trainable agent, and executes a full interaction
+    trajectory. The result is converted to vime's Sample format for training.
 
-    if user_model_provider == "openai" and "local" in user_model:
-        os.environ["OPENAI_API_KEY"] = os.environ.get("OPENAI_API_KEY", "dummy")
-        os.environ["OPENAI_API_BASE"] = f"http://{vllm_router_host}:{vllm_router_port}/v1"
-        user_model = vllm_model_name
+    Args:
+        args: Rollout arguments from vime training pipeline
+        sample: Sample containing task index in prompt field
+        sampling_params: LLM sampling parameters
 
-    tau_config = RunConfig(
-        env=getattr(args, "tau_env", "retail"),
-        agent="tool-calling",
-        user_model=user_model,
-        user_model_provider=user_model_provider,
-        task_split=getattr(args, "tau_task_split", "train"),
-        user_strategy=user_strategy,
-        model_provider="auto_router",
-        model="qwen3-4b",
-    )
+    Returns:
+        Sample object containing the complete interaction trajectory
 
-    task_index = None
-    if sample is not None and sample.prompt is not None:
-        try:
-            task_index = int(sample.prompt)
-        except (ValueError, TypeError):
-            pass
-
-    max_turns = getattr(args, "max_turns", 30)
-    if max_turns is None:
-        max_turns = 30
-
-    return TauBenchEnv(
-        tau_config=tau_config,
-        task_index=task_index,
-        max_turns=max_turns,
-    )
-
-
-def _compute_process_reward(env, base_reward: float) -> float:
-    logger.info(
-        f"[process_reward] env_id={id(env)}, type={type(env).__name__}, "
-        f"successful_tools={getattr(env, 'successful_tool_calls', 'N/A')}, "
-        f"total_tools={getattr(env, 'total_tool_calls', 'N/A')}, "
-        f"format_correct={getattr(env, 'format_correct_calls', 'N/A')}"
-    )
-    reward = 0.0
-    if base_reward > 0:
-        reward += 1.0
-    if env.successful_tool_calls > 0:
-        reward += 0.1 * env.successful_tool_calls
-    if env.format_correct_calls > 0:
-        reward += 0.05 * env.format_correct_calls
-    reward = min(reward, 1.5)
-    logger.info(
-        f"process_reward: base={base_reward}, successful_tools={env.successful_tool_calls}, "
-        f"format_correct={env.format_correct_calls}, total_tools={env.total_tool_calls}, "
-        f"final_reward={reward}"
-    )
-    return reward
-
-
-def _build_tools_section(tools_info: list[dict]) -> str:
-    if not tools_info:
-        return ""
-    tools_json = json.dumps(tools_info, ensure_ascii=False)
-    parts = [
-        "",
-        "",
-        "# Tools",
-        "",
-        "You may call one or more functions to assist with the user query.",
-        "",
-        "You are provided with function signatures within <tools></tools> XML tags:",
-        "<tools>",
-        tools_json,
-        "</tools>",
-        "",
-        "For each function call, return a json object with function name and arguments within",
-        "<tool_call>",
-        '{"name": <function-name>, "arguments": <args-json-object>}',
-        "</tool_call>",
-        "XML tags.",
-    ]
-    return "\n".join(parts)
-
-
-def _messages_for_render(messages: list[dict]) -> list[dict]:
-    out: list[dict] = []
-    for msg in messages:
-        out.append({"role": msg["role"], "content": msg.get("content", "")})
-    return out
-
-
-async def generate(args: Any, sample: Sample, sampling_params) -> Sample:
+    Raises:
+        AssertionError: If partial rollout is requested (not supported)
+    """
+    # Validate arguments
     assert not args.partial_rollout, "Partial rollout is not supported for tau-bench interactions."
 
-    _ensure_tau_args(args)
+    # Extract task index from sample prompt
+    task_index = int(sample.prompt)
+    logger.info(f"Starting agent-environment interaction for task {task_index}")
 
-    state = GenerateState(args)
-    base_url = f"http://{args.vllm_router_ip}:{args.vllm_router_port}"
-
-    sample.metadata = sample.metadata or {}
-
-    headers = None
-    if getattr(args, "router_policy", None) == "consistent_hash":
-        sample.session_id = sample.session_id or str(uuid.uuid4())
-        headers = {"x-session-id": sample.session_id}
-
-    try:
-        env = build_env(sample=sample, args=args)
-    except TypeError:
-        env = build_env(sample, args)
-
-    initial_obs = env.reset()
-    wiki = initial_obs.get("wiki", "")
-    tools_info = initial_obs.get("tools_info", [])
-    tools_section = _build_tools_section(tools_info)
-
-    messages: list[dict] = [
-        {"role": "system", "content": wiki + tools_section + "\n/no_think"},
-        {"role": "user", "content": initial_obs.get("obs_str", "")},
-    ]
-
-    response_tokens: list[int] = []
-    sample.loss_mask = sample.loss_mask or []
-    sample.rollout_log_probs = sample.rollout_log_probs or []
-    sample.tokens = list(sample.tokens) if sample.tokens else []
-
-    sampling_params = sampling_params.copy()
-    sampling_params["repetition_penalty"] = 1.1
-    sampling_params.setdefault("stop", ["</tool_call>"])
-    inference_sampling_params = _build_inference_sampling_params(sampling_params)
-    logger.info(
-        f"inference_sampling_params keys={list(inference_sampling_params.keys())}, stop={inference_sampling_params.get('stop')}"
+    # Initialize tau-bench environment
+    env = get_env(
+        env_name=tau_config.env,
+        user_strategy=tau_config.user_strategy,
+        user_model=tau_config.user_model,
+        user_provider=tau_config.user_model_provider,
+        task_split=tau_config.task_split,
+        task_index=task_index,
     )
-    max_response_budget = sampling_params.get("max_new_tokens")
 
-    def remaining_budget() -> int | None:
-        return None if max_response_budget is None else max_response_budget - sample.response_length
+    # Create trainable agent
+    agent = agent_factory(
+        tools_info=env.tools_info,
+        wiki=env.wiki,
+        config=tau_config,
+        rollout_args=args,
+        sampling_params=sampling_params,
+    )
 
-    async def render() -> dict:
-        render_messages = _messages_for_render(messages)
-        payload = {"model": args.hf_checkpoint, "messages": render_messages}
-        render_data = await post(f"{base_url}/v1/chat/completions/render", payload, headers=headers)
-        return _mm_render_response_to_generate_body(render_data, args.hf_checkpoint)
+    # Execute agent-environment interaction
+    # Note: The sample.prompt field contains the task index for repeatability
+    interaction_result = await agent.asolve(env, agent.rollout_args, agent.sampling_params, task_index)
 
-    def append_response_window(
-        token_ids: list[int],
-        loss_mask: list[int],
-        log_probs: list[float] | None = None,
-    ) -> None:
-        if not token_ids:
-            return
-        if len(loss_mask) != len(token_ids):
-            raise ValueError(f"loss_mask length {len(loss_mask)} != token_ids length {len(token_ids)}")
-        sample.tokens.extend(token_ids)
-        sample.loss_mask.extend(loss_mask)
-        sample.rollout_log_probs.extend(log_probs if log_probs is not None else [0.0] * len(token_ids))
-        sample.response_length += len(token_ids)
+    # Convert to vime Sample format
+    result_sample = res_to_sample(interaction_result, task_index)
 
-    def sampling_params_for_turn() -> dict | None:
-        params = dict(inference_sampling_params)
-        max_tokens = remaining_budget()
-        if max_tokens is None:
-            return params
-        if max_tokens <= 0:
-            return None
-        params["max_tokens"] = max_tokens
-        return params
-
-    try:
-        pending_obs_offset: int | None = None
-        rendered_body = await render()
-        prompt_ids = _coerce_flat_int_token_ids(rendered_body.get("token_ids"))
-        if not sample.tokens:
-            sample.tokens = list(prompt_ids)
-        if args.rollout_max_context_len is not None:
-            max_response_budget = max(0, args.rollout_max_context_len - len(sample.tokens))
-
-        vllm_max_len = getattr(args, "vllm_max_model_len", 16384) or 16384
-        if len(prompt_ids) >= vllm_max_len - 64:
-            logger.info(f"prompt too long ({len(prompt_ids)} tokens >= {vllm_max_len - 64}), skipping task")
-            sample.reward = _compute_process_reward(env, 0.0)
-            sample.status = Sample.Status.TRUNCATED
-            return sample
-
-        for turn_idx in range(args.max_turns):
-            input_ids = _coerce_flat_int_token_ids(rendered_body.get("token_ids"))
-
-            if pending_obs_offset is not None:
-                obs_tokens = input_ids[pending_obs_offset:]
-                remaining = remaining_budget()
-                if remaining is not None and len(obs_tokens) > remaining:
-                    append_response_window(obs_tokens[: max(remaining, 0)], [0] * max(remaining, 0))
-                    sample.status = Sample.Status.TRUNCATED
-                    break
-                append_response_window(obs_tokens, [0] * len(obs_tokens))
-                pending_obs_offset = None
-
-            current_sampling_params = sampling_params_for_turn()
-            if current_sampling_params is None:
-                sample.status = Sample.Status.TRUNCATED
-                break
-
-            body = dict(rendered_body)
-            body["sampling_params"] = current_sampling_params
-            output = await post(f"{base_url}/inference/v1/generate", body, headers=headers)
-            choice = output["choices"][0]
-            finish_reason = choice.get("finish_reason") or "stop"
-            new_tokens, new_logprobs = _inference_generate_tokens_and_logprobs(choice)
-
-            if not new_tokens:
-                if finish_reason in ("abort", "cancelled"):
-                    sample.status = Sample.Status.ABORTED
-                    break
-
-            response_text = state.tokenizer.decode(new_tokens, skip_special_tokens=False) if new_tokens else ""
-            logger.info(
-                f"[turn={turn_idx}] finish_reason={finish_reason}, response_text={repr(response_text[:500])}, num_tokens={len(new_tokens)}"
-            )
-            train_tokens = list(new_tokens)
-            train_logprobs = list(new_logprobs)
-            train_loss_mask = [1] * len(train_tokens)
-
-            stop = current_sampling_params.get("stop")
-            if not stop:
-                stop = ["</tool_call>"]
-            stop_strings = (stop,) if isinstance(stop, str) else tuple(stop) if stop else ()
-            hit_stop_str = None
-            hit_stop_pos = len(response_text)
-            if stop_strings:
-                for ss in stop_strings:
-                    pos = response_text.find(ss)
-                    if pos != -1 and pos < hit_stop_pos:
-                        hit_stop_str = ss
-                        hit_stop_pos = pos
-            if hit_stop_str is not None:
-                truncated_text = response_text[: hit_stop_pos + len(hit_stop_str)]
-                trunc_token_count = 0
-                for t in range(1, len(train_tokens) + 1):
-                    partial = state.tokenizer.decode(train_tokens[:t], skip_special_tokens=False)
-                    if partial >= truncated_text:
-                        trunc_token_count = t
-                        break
-                if trunc_token_count == 0:
-                    trunc_token_count = len(train_tokens)
-                logger.info(
-                    f"[turn={turn_idx}] STOP_STRING_HIT: '{hit_stop_str}' at pos={hit_stop_pos}, "
-                    f"truncated from {len(train_tokens)} to {trunc_token_count} tokens, "
-                    f"text_truncated={repr(truncated_text[:200])}"
-                )
-                train_tokens = train_tokens[:trunc_token_count]
-                train_logprobs = train_logprobs[:trunc_token_count]
-                train_loss_mask = train_loss_mask[:trunc_token_count]
-                response_text = truncated_text
-                finish_reason = "stop"
-
-            eos_token_id = getattr(state.tokenizer, "eos_token_id", None)
-            append_stop_eos = (
-                stop
-                and eos_token_id is not None
-                and getattr(args, "append_eos_token_after_stop_str_in_multi_turn", True)
-            )
-            if append_stop_eos:
-                already_has_eos = bool(train_tokens and train_tokens[-1] == eos_token_id)
-                if stop_strings and response_text.endswith(stop_strings) and not already_has_eos:
-                    if getattr(args, "use_rollout_routing_replay", False):
-                        raise RuntimeError(
-                            "Routing replay is not supported when appending an artificial EOS after a stop string, "
-                            "because vLLM does not return routed experts for that extra token."
-                        )
-                    train_tokens.append(int(eos_token_id))
-                    train_logprobs.append(0.0)
-                    train_loss_mask.append(0)
-
-            response_tokens.extend(new_tokens)
-            append_response_window(train_tokens, train_loss_mask, train_logprobs)
-            _apply_vllm_routed_experts(args, sample, choice)
-
-            messages.append({"role": "assistant", "content": response_text})
-
-            if finish_reason == "length":
-                sample.status = Sample.Status.TRUNCATED
-                break
-            if finish_reason in ("abort", "cancelled"):
-                sample.status = Sample.Status.ABORTED
-                break
-
-            observation, done, step_info = env.step(response_text)
-
-            if done:
-                base_reward = observation.get("reward", 0.0)
-                sample.reward = _compute_process_reward(env, base_reward)
-                sample.status = Sample.Status.COMPLETED
-                break
-
-            next_user_message = env.format_observation(observation)
-            messages.append(next_user_message)
-
-            if turn_idx + 1 >= args.max_turns:
-                sample.reward = _compute_process_reward(env, 0.0)
-                sample.status = Sample.Status.TRUNCATED
-                break
-
-            pending_obs_offset = len(input_ids) + len(train_tokens)
-            max_ctx = args.rollout_max_context_len or 8192
-            if len(sample.tokens) >= max_ctx - 64:
-                logger.info(
-                    f"[turn={turn_idx}] context overflow: {len(sample.tokens)} tokens >= {max_ctx - 64}, truncating"
-                )
-                sample.reward = _compute_process_reward(env, 0.0)
-                sample.status = Sample.Status.TRUNCATED
-                break
-            rendered_body = await render()
-            rendered_ids = _coerce_flat_int_token_ids(rendered_body.get("token_ids"))
-            is_prefix_stable = rendered_ids[:pending_obs_offset] == sample.tokens[:pending_obs_offset]
-            sample.metadata["multiturn_render"] = {
-                "prefix_stable": is_prefix_stable,
-                "prefix_len": pending_obs_offset,
-                "sample_len": len(sample.tokens),
-                "rendered_len": len(rendered_ids),
-                "turn": turn_idx + 1,
-            }
-            if getattr(args, "strict_multiturn_render_token_match", False) and not is_prefix_stable:
-                raise RuntimeError(
-                    "Full conversation render is not prefix-stable with the generated token stream: "
-                    f"{sample.metadata['multiturn_render']}"
-                )
-
-        sample.response = state.tokenizer.decode(response_tokens, skip_special_tokens=False)
-        sample.response_length = len(sample.loss_mask)
-        if sample.reward is None:
-            sample.reward = _compute_process_reward(env, getattr(env, "total_reward", 0.0))
-        if sample.status == Sample.Status.PENDING:
-            sample.status = Sample.Status.COMPLETED
-        return sample
-    finally:
-        try:
-            env.close()
-        except Exception:
-            pass
+    logger.info(f"Finished agent-environment interaction for task {task_index}")
+    return result_sample
