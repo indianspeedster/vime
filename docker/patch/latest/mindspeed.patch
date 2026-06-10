@@ -1,5 +1,5 @@
 diff --git a/mindspeed/core/fusions/fused_rms_norm.py b/mindspeed/core/fusions/fused_rms_norm.py
-index 001efcca..88fea6d1
+index 001efcca..88fea6d1 100644
 --- a/mindspeed/core/fusions/fused_rms_norm.py
 +++ b/mindspeed/core/fusions/fused_rms_norm.py
 @@ -31,10 +31,13 @@ class RMSNorm(torch.nn.Module):
@@ -17,8 +17,46 @@ index 001efcca..88fea6d1
  
      def forward(self, x):
          if self.config.use_fused_rmsnorm:
+diff --git a/mindspeed/features_manager/features_manager.py b/mindspeed/features_manager/features_manager.py
+index ba476adc..f5924b98 100644
+--- a/mindspeed/features_manager/features_manager.py
++++ b/mindspeed/features_manager/features_manager.py
+@@ -43,7 +43,10 @@ class MindSpeedFeaturesManager:
+             post_validate_features_args(args=args)  # args.x = old_x
+         """
+         for feature in cls.FEATURES_LIST:
+-            feature.pre_validate_args(args)
++            try:
++                feature.pre_validate_args(args)
++            except AttributeError:
++                pass
+ 
+     @classmethod
+     def post_validate_features_args(cls, args):
+@@ -54,13 +57,19 @@ class MindSpeedFeaturesManager:
+             post_validate_features_args(args=args)  # args.x = old_x
+         """
+         for feature in cls.FEATURES_LIST:
+-            feature.post_validate_args(args)
++            try:
++                feature.post_validate_args(args)
++            except AttributeError:
++                pass
+ 
+     @classmethod
+     def validate_features_args(cls, args):
+         """Validate arguments of all features."""
+         for feature in cls.FEATURES_LIST:
+-            feature.validate_args(args)
++            try:
++                feature.validate_args(args)
++            except AttributeError:
++                pass
+ 
+     @classmethod
+     def remove_patches(cls):
 diff --git a/mindspeed/model/transformer.py b/mindspeed/model/transformer.py
-index 8a269deb..ae760181
+index 8a269deb..ae760181 100644
 --- a/mindspeed/model/transformer.py
 +++ b/mindspeed/model/transformer.py
 @@ -54,7 +54,7 @@ def generate_attention_mask(compress, device):
@@ -31,7 +69,7 @@ index 8a269deb..ae760181
          seq_len = args.seq_length
      
 diff --git a/mindspeed/te/pytorch/module/layernorm_column_parallel_linear.py b/mindspeed/te/pytorch/module/layernorm_column_parallel_linear.py
-index ea73b44c..4e21de90
+index ea73b44c..4e21de90 100644
 --- a/mindspeed/te/pytorch/module/layernorm_column_parallel_linear.py
 +++ b/mindspeed/te/pytorch/module/layernorm_column_parallel_linear.py
 @@ -225,11 +225,29 @@ class MindSpeedTELayerNormColumnParallelLinear(torch.nn.Module):
@@ -68,39 +106,3 @@ index ea73b44c..4e21de90
  
      def enable_recompute_norm(self, norm_ckpt):
          self.is_recompute_norm = True
-diff --git a/mindspeed/features_manager/features_manager.py b/mindspeed/features_manager/features_manager.py
-index 1234567..abcdef0 100644
---- a/mindspeed/features_manager/features_manager.py
-+++ b/mindspeed/features_manager/features_manager.py
-@@ -52,5 +52,8 @@ class MindSpeedFeaturesManager:
-             args = validate_args(args, defaults)  # bypass args.x validation
-             post_validate_features_args(args=args)  # args.x = old_x
-         """
--        for feature in cls.FEATURES_LIST:
--            feature.pre_validate_args(args)
-+        for feature in cls.FEATURES_LIST:
-+            try:
-+                feature.pre_validate_args(args)
-+            except AttributeError:
-+                pass
-@@ -68,5 +71,8 @@ class MindSpeedFeaturesManager:
-             args = validate_args(args, defaults)  # bypass args.x validation
-             post_validate_features_args(args=args)  # args.x = old_x
-         """
--        for feature in cls.FEATURES_LIST:
--            feature.post_validate_args(args)
-+        for feature in cls.FEATURES_LIST:
-+            try:
-+                feature.post_validate_args(args)
-+            except AttributeError:
-+                pass
-@@ -79,5 +85,8 @@ class MindSpeedFeaturesManager:
-     def validate_features_args(cls, args):
-         """Validate arguments of all features."""
--        for feature in cls.FEATURES_LIST:
--            feature.validate_args(args)
-+        for feature in cls.FEATURES_LIST:
-+            try:
-+                feature.validate_args(args)
-+            except AttributeError:
-+                pass
