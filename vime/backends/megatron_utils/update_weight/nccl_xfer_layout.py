@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any
 
 import torch
-
 
 NCCL_XFER_MAX_TENSOR_DIMS = 3
 
