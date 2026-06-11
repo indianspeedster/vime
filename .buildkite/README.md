@@ -5,15 +5,18 @@ Buildkite port of the **always-on (CPU) jobs** from
 in parallel and stays authoritative until Buildkite has proven itself; the
 label-gated GPU suites are not migrated yet.
 
-| Step | Mirrors GHA job | Queue (machine) | When |
-|---|---|---|---|
-| `pre-commit` | `pre-commit` gate | `small_cpu_queue_premerge` (r6in.large) | every build |
-| `plugin-contracts` | `e2e-test-plugin-contracts` | `medium_cpu_queue_premerge` (r6in.4xlarge) | every build |
-| `agent-adapter` | `agent-adapter-test` | `small_cpu_queue_premerge` | PR / manual builds |
-| `unit` | `e2e-test-unit` | `medium_cpu_queue_premerge` | PR / manual builds |
+The whole pipeline is the static [`pipeline.yml`](./pipeline.yml) — no
+generator. It runs on every build (PR and push to `main`):
 
-All non-gate steps `depend_on` the pre-commit gate, matching the GHA
-`needs: pre-commit`. Suites run their test files sequentially inside one step
+| Step | Mirrors GHA job | Queue (machine) |
+|---|---|---|
+| `pre-commit` | `pre-commit` gate | `small_cpu_queue_premerge` (r6in.large) |
+| `plugin-contracts` | `e2e-test-plugin-contracts` (19 files) | `medium_cpu_queue_premerge` (r6in.4xlarge) |
+| `agent-adapter` | `agent-adapter-test` (3 files) | `small_cpu_queue_premerge` |
+| `unit` | `e2e-test-unit` (`pytest tests/unit tests/utils`) | `medium_cpu_queue_premerge` |
+
+The three test steps `depends_on` the pre-commit gate, matching the GHA
+`needs: pre-commit`. Each suite runs its files sequentially inside one step
 because these queues boot a fresh EC2 instance per job — a per-file matrix
 would be mostly boot + pip-install time. The `unit` step pulls
 `inferactinc/public:vime-latest` on every build (no local image cache on
@@ -26,13 +29,12 @@ Org `vllm`, cluster **CI** (the premerge queues live there).
 
 1. New pipeline: name `vime-ci`, repository
    `https://github.com/vllm-project/vime.git`.
-2. Steps — paste this instead of the default bare upload step (saves one
-   bootstrap instance boot per build):
+2. Leave the pipeline's Steps field as the default upload step — it reads the
+   committed `.buildkite/pipeline.yml`:
 
    ```yaml
    steps:
-     - label: ":pipeline: generate"
-       command: python3 .buildkite/generate_pipeline.py | buildkite-agent pipeline upload
+     - command: buildkite-agent pipeline upload
        agents:
          queue: small_cpu_queue_premerge
    ```
@@ -48,19 +50,8 @@ Org `vllm`, cluster **CI** (the premerge queues live there).
 
 No secrets are required for these steps (WANDB etc. is GPU-suite only).
 
-## Event behaviour
+## Keeping it in sync
 
-Buildkite step conditionals can't see GitHub event details, so the generator
-decides what to emit from `BUILDKITE_BRANCH` / `BUILDKITE_PULL_REQUEST`:
-
-- PR build or manual branch build → all four steps.
-- Push to `main` → `pre-commit` + `plugin-contracts` only (same reduced set
-  as GHA, which keeps main-push builds cheap while catching PR-pair
-  regressions).
-
-Test the generator locally:
-
-```bash
-python3 .buildkite/generate_pipeline.py                        # manual-build view
-BUILDKITE_BRANCH=main python3 .buildkite/generate_pipeline.py  # main-push view
-```
+The test lists mirror the always-on jobs in
+`.github/workflows/pr-test.yml.j2`. Until the GHA always-on jobs are retired,
+a test added/removed there should be mirrored in `pipeline.yml`.

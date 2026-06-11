@@ -1,12 +1,127 @@
-# Buildkite entrypoint. All real steps are generated at build time by
-# generate_pipeline.py — event/branch logic lives there, not in triggers.
+# Buildkite CI for vime — always-on (CPU) jobs.
 #
-# To avoid an extra bootstrap hop (one job = one fresh EC2 instance on these
-# queues), paste this same step into the pipeline's Steps field in the
-# Buildkite UI instead of the default bare `buildkite-agent pipeline upload`.
-# See .buildkite/README.md for the full pipeline setup.
+# Static port of the always-on jobs in .github/workflows/pr-test.yml.j2. The
+# GitHub Actions workflow keeps running in parallel and stays authoritative
+# while Buildkite proves itself; the label-gated GPU suites are not migrated
+# yet. See .buildkite/README.md for one-time pipeline setup.
+#
+# Notes that explain the otherwise-cryptic bits below:
+#   * Steps run inside containers (python:3.10 for the CPU suites, the vime CI
+#     image for the unit suite) because the elastic-stack agent host's python
+#     is not pinned to 3.10, matching the GHA jobs' interpreter.
+#   * $$PWD is escaped so the buildkite-agent expands it at run time instead of
+#     Buildkite interpolating it (to empty) at pipeline-upload time.
+#   * GIT_CONFIG_PARAMETERS marks the host-owned checkout as a safe directory so
+#     git (invoked by pre-commit) doesn't abort with "dubious ownership" when
+#     the container runs as root over a tree owned by the buildkite-agent user.
+#   * Each non-gate step depends_on the pre-commit gate, mirroring the GHA
+#     `needs: pre-commit`, so a failing lint run skips the heavier test steps.
+#   * Test files are listed one per line on purpose: with `set -e` the run stops
+#     at the first failure and the log names it, and the list stays a trivial
+#     diff against the GHA matrix.
+
 steps:
-  - label: ":pipeline: generate"
-    command: python3 .buildkite/generate_pipeline.py | buildkite-agent pipeline upload
+  - label: ":lint-roller: pre-commit"
+    key: pre-commit
     agents:
       queue: small_cpu_queue_premerge
+    timeout_in_minutes: 15
+    retry:
+      automatic:
+        - exit_status: -1  # agent lost (fresh instance failed to boot)
+          limit: 2
+    command: |
+      docker run --rm \
+        -e GIT_CONFIG_PARAMETERS="'safe.directory=/workspace'" \
+        -v "$$PWD:/workspace" -w /workspace \
+        python:3.10 bash -c '
+          set -euo pipefail
+          pip install -q pre-commit
+          pre-commit run --all-files --show-diff-on-failure --color=always
+        '
+
+  - label: ":python: plugin contracts & CPU tests"
+    key: plugin-contracts
+    depends_on: pre-commit
+    agents:
+      queue: medium_cpu_queue_premerge
+    timeout_in_minutes: 30
+    retry:
+      automatic:
+        - exit_status: -1
+          limit: 2
+    command: |
+      docker run --rm --shm-size=2g \
+        -e GIT_CONFIG_PARAMETERS="'safe.directory=/workspace'" \
+        -v "$$PWD:/workspace" -w /workspace \
+        python:3.10 bash -c '
+          set -euo pipefail
+          pip install -q torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -q pytest numpy packaging pyyaml omegaconf tqdm httpx pybase64 pylatexenc sympy aiohttp pillow
+          pip install -q -e . --no-deps
+          python tests/test_megatron_argument_validation.py
+          python tests/test_value_temperature.py
+          python tests/test_rollout_validation.py
+          python tests/plugin_contracts/test_plugin_rollout_contracts.py
+          python tests/plugin_contracts/test_plugin_runtime_hook_contracts.py
+          python tests/plugin_contracts/test_plugin_path_loading_contracts.py
+          python tests/plugin_contracts/test_plugin_generate_contracts.py
+          python tests/test_rm_deepscaler.py
+          python tests/test_rm_f1.py
+          python tests/test_rm_gpqa.py
+          python tests/test_rm_math.py
+          python tests/test_rm_math_dapo.py
+          python tests/test_dp_schedule.py
+          python tests/test_cp_utils.py
+          python tests/test_metric_report.py
+          python tests/test_metric_report_dist.py
+          python tests/test_loss_cp_invariance.py
+          python tests/test_sample.py
+          python tests/utils/test_hf_checkpoint_saver.py
+        '
+
+  - label: ":robot_face: agent adapter tests"
+    key: agent-adapter
+    depends_on: pre-commit
+    agents:
+      queue: small_cpu_queue_premerge
+    timeout_in_minutes: 30
+    retry:
+      automatic:
+        - exit_status: -1
+          limit: 2
+    command: |
+      docker run --rm --shm-size=2g \
+        -e GIT_CONFIG_PARAMETERS="'safe.directory=/workspace'" \
+        -v "$$PWD:/workspace" -w /workspace \
+        python:3.10 bash -c '
+          set -euo pipefail
+          pip install -q torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -q pytest numpy packaging pyyaml omegaconf tqdm httpx pybase64 pylatexenc sympy aiohttp pillow
+          pip install -q openai openai-agents anthropic
+          pip install -q -e . --no-deps
+          python tests/test_agent_trajectory.py
+          python tests/test_agent_adapters.py
+          python tests/test_agent_sdk_adapters.py
+        '
+
+  - label: ":pytest: unit & utils tests (in-image)"
+    key: unit
+    depends_on: pre-commit
+    agents:
+      queue: medium_cpu_queue_premerge
+    timeout_in_minutes: 45
+    retry:
+      automatic:
+        - exit_status: -1
+          limit: 2
+    command: |
+      docker run --rm --network host --ipc=host \
+        -e GIT_CONFIG_PARAMETERS="'safe.directory=/workspace'" \
+        -v "$$PWD:/workspace" -w /workspace \
+        inferactinc/public:vime-latest bash -lc '
+          set -euo pipefail
+          pip install -q -e . --no-deps --break-system-packages
+          pip install -q pytest --break-system-packages
+          python -m pytest tests/unit tests/utils
+        '
