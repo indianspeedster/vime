@@ -33,7 +33,16 @@ NODE_INSTANCE_TYPE = "gpu-h100-sxm"
 # (test_file, num_gpus, extra_args, env overrides)
 SUITES = {
     "short": [
-        ("test_qwen3.5_0.8B_gsm8k_async_short.py", 4, "", {}),
+        # expandable_segments: borderline fit on the pool's 80 GB H100s — OOMed
+        # in compute_log_probs with 7 GiB reserved-but-unallocated (build #6).
+        # Scoped to this test only: vLLM's sleep-mode CuMemAllocator can
+        # conflict with expandable segments, so don't set it pod-wide.
+        (
+            "test_qwen3.5_0.8B_gsm8k_async_short.py",
+            4,
+            "",
+            {"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"},
+        ),
         ("test_qwen3.5_0.8B_gsm8k_short.py", 4, "", {}),
         ("test_qwen2.5_0.5B_ppo_critic_only_short.py", 4, "", {}),
         ("test_qwen2.5_0.5B_fully_async_short.py", 4, "", {}),
@@ -88,13 +97,16 @@ def selected_suites() -> list:
 
 
 def gpu_step(suite: str, test_file: str, num_gpus: int, extra_args: str, env: dict) -> dict:
+    vime_flags = {k: v for k, v in env.items() if k in ("USE_DEEPEP", "USE_FP8_ROLLOUT", "ENABLE_EVAL")}
     pod_env = [
         {"name": "HF_HOME", "value": HF_HOME},
         {"name": "VIME_TEST_ENABLE_INFINITE_RUN", "value": "false"},
-        {"name": "VIME_TEST_USE_DEEPEP", "value": env.get("USE_DEEPEP", "0")},
-        {"name": "VIME_TEST_USE_FP8_ROLLOUT", "value": env.get("USE_FP8_ROLLOUT", "0")},
-        {"name": "VIME_TEST_ENABLE_EVAL", "value": env.get("ENABLE_EVAL", "1")},
+        {"name": "VIME_TEST_USE_DEEPEP", "value": vime_flags.get("USE_DEEPEP", "0")},
+        {"name": "VIME_TEST_USE_FP8_ROLLOUT", "value": vime_flags.get("USE_FP8_ROLLOUT", "0")},
+        {"name": "VIME_TEST_ENABLE_EVAL", "value": vime_flags.get("ENABLE_EVAL", "1")},
     ]
+    # anything else in env is passed to the pod verbatim (e.g. allocator knobs)
+    pod_env += [{"name": k, "value": v} for k, v in env.items() if k not in vime_flags]
     # GITHUB_COMMIT_NAME mirrors GHA (<sha>_<pr-number|non-pr>); computed in the
     # command because it needs shell expansion of BUILDKITE_* at run time.
     command = "\n".join(
@@ -108,7 +120,7 @@ def gpu_step(suite: str, test_file: str, num_gpus: int, extra_args: str, env: di
         ]
     )
     label = f":fire: {suite}: {test_file}{' ' + extra_args if extra_args else ''}"
-    flag_note = ",".join(f"{k.lower()}={v}" for k, v in env.items())
+    flag_note = ",".join(f"{k.lower()}={v}" for k, v in vime_flags.items())
     if flag_note:
         label += f" ({flag_note})"
     return {
