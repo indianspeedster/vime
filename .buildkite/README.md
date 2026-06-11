@@ -5,8 +5,8 @@ Buildkite port of the **always-on (CPU) jobs** from
 in parallel and stays authoritative until Buildkite has proven itself; the
 label-gated GPU suites are not migrated yet.
 
-The whole pipeline is the static [`pipeline.yml`](./pipeline.yml) — no
-generator. It runs on every build (PR and push to `main`):
+The always-on steps live in the static [`pipeline.yml`](./pipeline.yml) and
+run on every build (PR and push to `main`):
 
 | Step | Mirrors GHA job | Queue (machine) |
 |---|---|---|
@@ -50,8 +50,30 @@ Org `vllm`, cluster **CI** (the premerge queues live there).
 
 No secrets are required for these steps (WANDB etc. is GPU-suite only).
 
+## GPU suites (manual gate instead of PR labels)
+
+GitHub PR labels can't trigger Buildkite jobs, so the `run-ci-*` label-gated
+GPU suites are behind a **block step** (`:rocket: Run GPU test suites?`):
+click it in the Buildkite UI, multi-select the suites (`short`,
+`vllm-config`, `megatron`, `precision`, `ckpt`), and the follow-up step
+generates one job per test via [`gpu_suites.py`](./gpu_suites.py) — the same
+`gpu_lock_exec.py` + `docker run` invocations as the GHA jobs, including the
+per-test `VIME_TEST_USE_DEEPEP` / `USE_FP8_ROLLOUT` / `ENABLE_EVAL` combos.
+
+The block uses `blocked_state: passed`, so a build whose CPU steps are green
+reports a passing commit status even if nobody unblocks the GPU gate.
+
+GPU jobs target the agent queue **`vime-gpu`**. Prerequisites on each vime
+self-hosted GPU host:
+
+- a `buildkite-agent` registered in the **CI** cluster with
+  `tags="queue=vime-gpu"`,
+- `WANDB_API_KEY` exported in the agent's environment (an agent `environment`
+  hook works),
+- the usual `/mnt/nvme0n1/vime_ci` model/dataset mounts.
+
 ## Keeping it in sync
 
-The test lists mirror the always-on jobs in
-`.github/workflows/pr-test.yml.j2`. Until the GHA always-on jobs are retired,
-a test added/removed there should be mirrored in `pipeline.yml`.
+The test lists mirror `.github/workflows/pr-test.yml.j2` (always-on jobs in
+`pipeline.yml`, label-gated jobs in `gpu_suites.py`). Until the GHA jobs are
+retired, a test added/removed there should be mirrored here.

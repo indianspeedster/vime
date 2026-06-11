@@ -1,9 +1,9 @@
 # Buildkite CI for vime — always-on (CPU) jobs.
 #
-# Static port of the always-on jobs in .github/workflows/pr-test.yml.j2. The
+# Static port of the always-on jobs in .github/workflows/pr-test.yml.j2, plus
+# a manual block-step gate for the label-gated GPU suites (gpu_suites.py). The
 # GitHub Actions workflow keeps running in parallel and stays authoritative
-# while Buildkite proves itself; the label-gated GPU suites are not migrated
-# yet. See .buildkite/README.md for one-time pipeline setup.
+# while Buildkite proves itself. See .buildkite/README.md for one-time setup.
 #
 # Notes that explain the otherwise-cryptic bits below:
 #   * Steps run inside containers (python:3.10 for the CPU suites, the vime CI
@@ -57,7 +57,7 @@ steps:
         python:3.10 bash -c '
           set -euo pipefail
           pip install -q torch --index-url https://download.pytorch.org/whl/cpu
-          pip install -q pytest numpy packaging pyyaml omegaconf tqdm httpx pybase64 pylatexenc sympy aiohttp pillow
+          pip install -q pytest numpy packaging pyyaml omegaconf tqdm httpx requests ray pybase64 pylatexenc sympy aiohttp pillow safetensors
           pip install -q -e . --no-deps
           python tests/test_megatron_argument_validation.py
           python tests/test_value_temperature.py
@@ -97,7 +97,7 @@ steps:
         python:3.10 bash -c '
           set -euo pipefail
           pip install -q torch --index-url https://download.pytorch.org/whl/cpu
-          pip install -q pytest numpy packaging pyyaml omegaconf tqdm httpx pybase64 pylatexenc sympy aiohttp pillow
+          pip install -q pytest numpy packaging pyyaml omegaconf tqdm httpx requests ray pybase64 pylatexenc sympy aiohttp pillow safetensors
           pip install -q openai openai-agents anthropic
           pip install -q -e . --no-deps
           python tests/test_agent_trajectory.py
@@ -125,3 +125,38 @@ steps:
           pip install -q pytest --break-system-packages
           python -m pytest tests/unit tests/utils
         '
+
+  # GitHub PR labels can't trigger Buildkite jobs, so the run-ci-* GPU suites
+  # are launched from this manual gate instead: unblocking presents a
+  # multi-select of suites, and the follow-up step uploads only the selected
+  # ones (see gpu_suites.py). `blocked_state: passed` keeps the build — and the
+  # GitHub commit status — green when nobody needs GPU suites on a PR.
+  - block: ":rocket: Run GPU test suites?"
+    key: gpu-gate
+    depends_on: pre-commit
+    blocked_state: passed
+    prompt: "Equivalent of the run-ci-* PR labels in GitHub Actions. Select the suites to run."
+    fields:
+      - select: "GPU suites"
+        key: gpu-suites
+        multiple: true
+        required: true
+        options:
+          - label: "run-ci-short — 4 GPU, 4 tests"
+            value: short
+          - label: "run-ci-vllm-config — 8 GPU, 4 tests"
+            value: vllm-config
+          - label: "run-ci-megatron — 8 GPU, 14 runs"
+            value: megatron
+          - label: "run-ci-precision — 8 GPU, 1 test"
+            value: precision
+          - label: "run-ci-ckpt — 8 GPU, 2 runs"
+            value: ckpt
+
+  - label: ":pipeline: upload selected GPU suites"
+    key: gpu-suites-upload
+    depends_on: gpu-gate
+    agents:
+      queue: small_cpu_queue_premerge
+    timeout_in_minutes: 10
+    command: python3 .buildkite/gpu_suites.py | buildkite-agent pipeline upload
