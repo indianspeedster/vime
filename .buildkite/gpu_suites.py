@@ -6,6 +6,13 @@ pipeline.yml. The suites and their env-var combinations mirror the label-gated
 GPU jobs in .github/workflows/pr-test.yml.j2 (run-ci-short / vllm-config /
 megatron / precision / ckpt); keep them in sync until the GHA jobs are retired.
 
+GPU jobs run on the shared `mithril-h100-pool` queue the same way vllm-omni
+uses it: one Kubernetes pod per job via the agent-stack-k8s `kubernetes`
+plugin, GPUs allocated with `nvidia.com/gpu` limits on H100 SXM nodes,
+memory-backed /dev/shm, and the node's /mnt/hf-cache mounted as HF_HOME (vime
+tests `hf download` their models at startup, so a warm cache is all they
+need — no pre-staged model mounts).
+
 The selection is read from the block step's multi-select field (newline-
 separated values in the `gpu-suites` build meta-data key). For local testing,
 set GPU_SUITES=short,ckpt instead of having a buildkite-agent on PATH.
@@ -15,11 +22,13 @@ stdlib only — runs with the agent host's python3.
 
 import json
 import os
-import shlex
 import subprocess
 
-GPU_QUEUE = "vime-gpu"  # self-hosted vime GPU hosts registered with this tag
+GPU_QUEUE = "mithril-h100-pool"
 CI_IMAGE = "inferactinc/public:vime-latest"
+HF_CACHE_HOST_PATH = "/mnt/hf-cache"
+HF_HOME = "/root/.cache/huggingface"
+NODE_INSTANCE_TYPE = "gpu-h100-sxm"
 
 # (test_file, num_gpus, extra_args, env overrides)
 SUITES = {
@@ -79,40 +88,23 @@ def selected_suites() -> list:
 
 
 def gpu_step(suite: str, test_file: str, num_gpus: int, extra_args: str, env: dict) -> dict:
-    test_env = {
-        "VIME_TEST_ENABLE_INFINITE_RUN": "false",
-        "VIME_TEST_USE_DEEPEP": env.get("USE_DEEPEP", "0"),
-        "VIME_TEST_USE_FP8_ROLLOUT": env.get("USE_FP8_ROLLOUT", "0"),
-        "VIME_TEST_ENABLE_EVAL": env.get("ENABLE_EVAL", "1"),
-    }
-    inner = "\n".join(
-        [
-            "set -euo pipefail",
-            "pip install -e . --no-deps --break-system-packages",
-            f"python tests/ci/gpu_lock_exec.py --count {num_gpus} -- "
-            f"python tests/{test_file}{' ' + extra_args if extra_args else ''}",
-        ]
-    )
-    # GITHUB_COMMIT_NAME mirrors GHA: <sha>_<pr-number|non-pr>. WANDB_API_KEY
-    # comes from the self-hosted agent's environment.
+    pod_env = [
+        {"name": "HF_HOME", "value": HF_HOME},
+        {"name": "VIME_TEST_ENABLE_INFINITE_RUN", "value": "false"},
+        {"name": "VIME_TEST_USE_DEEPEP", "value": env.get("USE_DEEPEP", "0")},
+        {"name": "VIME_TEST_USE_FP8_ROLLOUT", "value": env.get("USE_FP8_ROLLOUT", "0")},
+        {"name": "VIME_TEST_ENABLE_EVAL", "value": env.get("ENABLE_EVAL", "1")},
+    ]
+    # GITHUB_COMMIT_NAME mirrors GHA (<sha>_<pr-number|non-pr>); computed in the
+    # command because it needs shell expansion of BUILDKITE_* at run time.
     command = "\n".join(
         [
             'PR="${BUILDKITE_PULL_REQUEST:-false}"',
             '[ "$PR" = "false" ] && PR="non-pr"',
             'export GITHUB_COMMIT_NAME="${BUILDKITE_COMMIT}_${PR}"',
-            "docker run --rm \\",
-            "  --privileged --cap-add SYS_NICE --security-opt seccomp=unconfined \\",
-            "  --network host --gpus all --ipc=host --shm-size=16g \\",
-            "  --ulimit memlock=-1 --ulimit stack=67108864 --memory=0 --memory-swap=0 \\",
-            "  -e GITHUB_COMMIT_NAME -e WANDB_API_KEY \\",
-        ]
-        + [f"  -e {k}={v} \\" for k, v in test_env.items()]
-        + [
-            '  -v "$PWD:/workspace" -w /workspace \\',
-            "  -v /mnt/nvme0n1/vime_ci:/data/vime_ci \\",
-            "  -v /mnt/nvme0n1/vime_ci/models:/root/models \\",
-            "  -v /mnt/nvme0n1/vime_ci/datasets:/root/datasets \\",
-            f"  {CI_IMAGE} bash -lc {shlex.quote(inner)}",
+            "pip install -e . --no-deps --break-system-packages",
+            f"python tests/ci/gpu_lock_exec.py --count {num_gpus} -- "
+            f"python tests/{test_file}{' ' + extra_args if extra_args else ''}",
         ]
     )
     label = f":fire: {suite}: {test_file}{' ' + extra_args if extra_args else ''}"
@@ -125,6 +117,33 @@ def gpu_step(suite: str, test_file: str, num_gpus: int, extra_args: str, env: di
         "agents": {"queue": GPU_QUEUE},
         "timeout_in_minutes": 360,
         "retry": {"automatic": [{"exit_status": -1, "limit": 2}]},
+        "plugins": [
+            {
+                "kubernetes": {
+                    "podSpec": {
+                        "containers": [
+                            {
+                                "image": CI_IMAGE,
+                                "resources": {"limits": {"nvidia.com/gpu": num_gpus}},
+                                "volumeMounts": [
+                                    {"name": "devshm", "mountPath": "/dev/shm"},
+                                    {"name": "hf-cache", "mountPath": HF_HOME},
+                                ],
+                                "env": pod_env,
+                            }
+                        ],
+                        "nodeSelector": {"node.kubernetes.io/instance-type": NODE_INSTANCE_TYPE},
+                        "volumes": [
+                            {"name": "devshm", "emptyDir": {"medium": "Memory"}},
+                            {
+                                "name": "hf-cache",
+                                "hostPath": {"path": HF_CACHE_HOST_PATH, "type": "DirectoryOrCreate"},
+                            },
+                        ],
+                    }
+                }
+            }
+        ],
     }
 
 

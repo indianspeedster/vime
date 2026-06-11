@@ -63,14 +63,15 @@ per-test `VIME_TEST_USE_DEEPEP` / `USE_FP8_ROLLOUT` / `ENABLE_EVAL` combos.
 The block uses `blocked_state: passed`, so a build whose CPU steps are green
 reports a passing commit status even if nobody unblocks the GPU gate.
 
-GPU jobs target the agent queue **`vime-gpu`**. Prerequisites on each vime
-self-hosted GPU host:
-
-- a `buildkite-agent` registered in the **CI** cluster with
-  `tags="queue=vime-gpu"`,
-- `WANDB_API_KEY` exported in the agent's environment (an agent `environment`
-  hook works),
-- the usual `/mnt/nvme0n1/vime_ci` model/dataset mounts.
+GPU jobs run on the shared **`mithril-h100-pool`** queue, following the same
+pattern vllm-omni uses for it: each job is a Kubernetes pod (agent-stack-k8s
+`kubernetes` plugin) on an H100 SXM node, with GPUs allocated via
+`nvidia.com/gpu` limits (4 or 8), a memory-backed `/dev/shm`, and the node's
+`/mnt/hf-cache` mounted as `HF_HOME`. vime tests `hf download` their models at
+startup, so a warm HF cache is all they need — the `/mnt/nvme0n1/vime_ci`
+mounts from the GHA self-hosted runners are not required. `WANDB_API_KEY` is
+not wired up yet; runs report without wandb until it's added (e.g. as a k8s
+secret in the pod spec).
 
 ## Keeping it in sync
 

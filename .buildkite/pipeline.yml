@@ -51,8 +51,13 @@ steps:
         - exit_status: -1
           limit: 2
     command: |
+      # GLOO/TP_SOCKET_IFNAME=lo: the torch.distributed tests (e.g.
+      # test_metric_report_dist) rendezvous over localhost; inside a
+      # bridge-network container gloo sometimes picks the wrong interface and
+      # hangs until the step times out (build #4). Pin it to loopback.
       docker run --rm --shm-size=2g \
         -e GIT_CONFIG_PARAMETERS="'safe.directory=/workspace'" \
+        -e GLOO_SOCKET_IFNAME=lo -e TP_SOCKET_IFNAME=lo \
         -v "$$PWD:/workspace" -w /workspace \
         python:3.10 bash -c '
           set -euo pipefail
