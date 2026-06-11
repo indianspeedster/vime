@@ -1,11 +1,12 @@
 // Inject a language toggle button into the topbar (sphinx-book-theme compatible)
 (function(){
   const STORAGE_KEY = 'vime-doc-lang';
-  // Default language EN has no URL prefix; Chinese uses '/zh/' inserted after optional repo root.
+  const ZH_SEGMENT = 'zh-cn';
+  // Default language EN has no URL prefix; Chinese uses 'zh-cn' inserted after optional repo root.
   function detectCurrent(){
     const { langIndex, parts } = analyzePath();
     if(langIndex === -1) return 'en';
-    return parts[langIndex] === 'zh' ? 'zh' : 'en';
+    return parts[langIndex] === ZH_SEGMENT ? 'zh' : 'en';
   }
   function otherLang(lang){ return lang === 'zh' ? 'en' : 'zh'; }
   /**
@@ -14,8 +15,8 @@
    *  /en/…                (language as first segment)
    *  /vime/en/…          (GitHub Pages project site repo root, language second)
    *  /projects/vime/en/…  (Read the Docs project prefix, language third)
-   *  /vime/ (no lang yet) -> insert /vime/zh/
-   *  /projects/vime/ (no lang yet) -> insert /projects/vime/zh/
+   *  /vime/ (no lang yet) -> insert /vime/zh-cn/
+   *  /projects/vime/ (no lang yet) -> insert /projects/vime/zh-cn/
    *  / (no lang) -> insert /zh/
    */
   function analyzePath(){
@@ -29,7 +30,7 @@
     }
     let langIndex = -1;
     for(let i = repoRootLen; i < Math.min(parts.length, repoRootLen + 3); i++){
-      if(parts[i] === 'en' || parts[i] === 'zh'){
+      if(parts[i] === 'en' || parts[i] === ZH_SEGMENT){
         langIndex = i;
         break;
       }
@@ -45,9 +46,9 @@
       parts.splice(langIndex, 1);
     }
     if(repoRootLen > 0){
-      parts.splice(repoRootLen, 0, target);
+      parts.splice(repoRootLen, 0, target === 'zh' ? ZH_SEGMENT : 'en');
     } else if(target === 'zh'){
-      parts.unshift('zh');
+      parts.unshift(ZH_SEGMENT);
     } else if(parts[0] !== 'en'){
       parts.unshift('en');
     }

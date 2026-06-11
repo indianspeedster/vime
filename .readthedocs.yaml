@@ -11,5 +11,10 @@ build:
       - pip install -r docs/requirements.txt
     build:
       html:
-        - mkdir -p "$READTHEDOCS_OUTPUT/html"
-        - VIME_DOC_LANG=en sphinx-build -b html -D language=en -c docs docs/en "$READTHEDOCS_OUTPUT/html"
+        - |
+          mkdir -p "$READTHEDOCS_OUTPUT/html"
+          if [ "${READTHEDOCS_LANGUAGE:-en}" = "zh-cn" ]; then
+            VIME_DOC_LANG=zh sphinx-build -b html -D language=zh -c docs docs/zh "$READTHEDOCS_OUTPUT/html"
+          else
+            VIME_DOC_LANG=en sphinx-build -b html -D language=en -c docs docs/en "$READTHEDOCS_OUTPUT/html"
+          fi
