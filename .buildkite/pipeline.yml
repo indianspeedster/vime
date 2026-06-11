@@ -1,0 +1,12 @@
+# Buildkite entrypoint. All real steps are generated at build time by
+# generate_pipeline.py — event/branch logic lives there, not in triggers.
+#
+# To avoid an extra bootstrap hop (one job = one fresh EC2 instance on these
+# queues), paste this same step into the pipeline's Steps field in the
+# Buildkite UI instead of the default bare `buildkite-agent pipeline upload`.
+# See .buildkite/README.md for the full pipeline setup.
+steps:
+  - label: ":pipeline: generate"
+    command: python3 .buildkite/generate_pipeline.py | buildkite-agent pipeline upload
+    agents:
+      queue: small_cpu_queue_premerge
