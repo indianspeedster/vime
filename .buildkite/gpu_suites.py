@@ -30,19 +30,13 @@ HF_CACHE_HOST_PATH = "/mnt/hf-cache"
 HF_HOME = "/root/.cache/huggingface"
 NODE_INSTANCE_TYPE = "gpu-h100-sxm"
 
-# Tests with known failures on the pool's 80 GB H100s — test-level issues, not
-# pipeline ones (PR #239, builds #6/#7):
+# Known failures on the pool's 80 GB H100s — kept failing loudly on purpose
+# (PR #239, builds #6/#7) until the underlying issues are resolved:
 #   * gsm8k_async_short: the actor GPU needs >80 GB as tuned
 #     (--max-tokens-per-gpu 9216 with the 248k vocab; 67 GiB live allocations
 #     after expandable_segments removed fragmentation). The sync twin passes.
 #   * parallel_check: cross-layout grad-norm invariance (CP=2) diverges ~4%
 #     from the same-node baseline recording.
-# soft_fail keeps them running and visible without failing the build; the GHA
-# label jobs remain their authoritative gate.
-SOFT_FAIL_ON_H100 = {
-    "test_qwen3.5_0.8B_gsm8k_async_short.py",
-    "test_qwen3_0.6B_parallel_check.py",
-}
 
 # (test_file, num_gpus, extra_args, env overrides)
 SUITES = {
@@ -171,9 +165,6 @@ def gpu_step(suite: str, test_file: str, num_gpus: int, extra_args: str, env: di
             }
         ],
     }
-    if test_file in SOFT_FAIL_ON_H100:
-        step["soft_fail"] = True
-        step["label"] = ":warning: " + step["label"]
     return step
 
 
