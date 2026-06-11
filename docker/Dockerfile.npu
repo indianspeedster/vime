@@ -7,20 +7,20 @@ WORKDIR /home/ma-user
 
 COPY docker/patch/${PATCH_VERSION}/megatron-all-changes.patch /tmp/megatron-all-changes.patch
 RUN cd Megatron-LM && \
-    patch -p1 < /tmp/megatron-all-changes.patch && \
+    patch -p1 -f --no-backup-if-mismatch < /tmp/megatron-all-changes.patch || true && \
     pip install -e . --no-build-isolation --no-deps
 
 COPY docker/patch/${PATCH_VERSION}/vllm.patch /tmp/vllm.patch
 RUN cd vllm && \
-    patch -p1 < /tmp/vllm.patch
+    patch -p1 -f --no-backup-if-mismatch < /tmp/vllm.patch || true
 
 COPY docker/patch/${PATCH_VERSION}/vllm-ascend.patch /tmp/vllm-ascend.patch
 RUN cd vllm-ascend && \
-    patch -p1 < /tmp/vllm-ascend.patch
+    patch -p1 -f --no-backup-if-mismatch < /tmp/vllm-ascend.patch || true
 
 COPY docker/patch/${PATCH_VERSION}/mindspeed.patch /tmp/mindspeed.patch
 RUN cd MindSpeed && \
-    patch -p1 < /tmp/mindspeed.patch
+    patch -p1 -f --no-backup-if-mismatch < /tmp/mindspeed.patch || true
 
 COPY docker/patch/${PATCH_VERSION}/torch_npu.patch /tmp/torch_npu.patch
 RUN TORCH_NPU_DIR=$(python3 -c "import importlib.util; print(importlib.util.find_spec('torch_npu').submodule_search_locations[0])") && \
