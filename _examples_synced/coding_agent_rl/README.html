@@ -587,12 +587,11 @@ bash<span class="w"> </span>examples/coding_agent_rl/run_qwen36_35b_a3b_swe_8nod
 </tbody>
 </table>
 </div>
-<p><code class="docutils literal notranslate"><span class="pre">--rollout-max-response-len</span></code> is the per-turn generation cap passed to each vLLM
-<code class="docutils literal notranslate"><span class="pre">/inference/v1/generate</span></code> call as the sampling-params <code class="docutils literal notranslate"><span class="pre">max_tokens</span></code>.
-<code class="docutils literal notranslate"><span class="pre">--rollout-max-context-len</span></code> is the multi-turn prompt+response budget enforced
-only during generation: each turn clamps the generation length to the remaining
-context. Trajectory merge/export keeps the emitted segments and does not drop
-them for length.
+<p><code class="docutils literal notranslate"><span class="pre">--rollout-max-response-len</span></code> is the per-turn generation cap passed to each
+vLLM <code class="docutils literal notranslate"><span class="pre">/inference/v1/generate</span></code> call as <code class="docutils literal notranslate"><span class="pre">max_tokens</span></code>. <code class="docutils literal notranslate"><span class="pre">--rollout-max-context-len</span></code> is the
+multi-turn prompt+response budget enforced only during generation: each turn
+clamps <code class="docutils literal notranslate"><span class="pre">max_tokens</span></code> to the remaining context. Trajectory merge/export keeps
+the emitted segments and does not drop them for length.
 The Anthropic adapter reuses <code class="docutils literal notranslate"><span class="pre">--vllm-tool-call-parser</span></code> and
 <code class="docutils literal notranslate"><span class="pre">--vllm-reasoning-parser</span></code> for output parsing, so those flags must match the
 served model.</p>
@@ -609,9 +608,8 @@ are the same tokens the rollout model actually sampled.</p>
 <li><p>Each incoming message history is rendered with the served model’s chat
 template and sent to vLLM as <code class="docutils literal notranslate"><span class="pre">token_ids</span></code>.</p></li>
 <li><p>vLLM’s <code class="docutils literal notranslate"><span class="pre">/inference/v1/generate</span></code> is called with <code class="docutils literal notranslate"><span class="pre">logprobs</span></code> set; the adapter
-records the exact <code class="docutils literal notranslate"><span class="pre">prompt_ids</span></code>, sampled <code class="docutils literal notranslate"><span class="pre">output_ids</span></code> (<code class="docutils literal notranslate"><span class="pre">choices[0].token_ids</span></code>),
-and per-token rollout logprobs (<code class="docutils literal notranslate"><span class="pre">choices[0].logprobs.content[i].logprob</span></code>) for
-that turn.</p></li>
+records the exact <code class="docutils literal notranslate"><span class="pre">prompt_ids</span></code>, sampled <code class="docutils literal notranslate"><span class="pre">output_ids</span></code>, and per-token rollout
+logprobs for that turn.</p></li>
 <li><p>At training export time, samples are assembled from those saved token ids.
 The decoded <code class="docutils literal notranslate"><span class="pre">response</span></code> field is only a readable sidecar; it is not
 re-tokenized to recover the training sequence.</p></li>
@@ -632,7 +630,10 @@ assigned <code class="docutils literal notranslate"><span class="pre">loss_mask=
 <p>That last case is the important correctness guard. A re-tokenization mismatch
 can make a string-level conversation look continuous while token-level
 provenance is broken. vime keeps the context needed to continue the agent, but
-does not backprop through tokens whose sampled origin can no longer be proven.</p>
+does not backprop through tokens whose sampled origin can no longer be proven.
+The unit tests in <code class="docutils literal notranslate"><span class="pre">tests/test_agent_trajectory.py</span></code> cover matched prefixes,
+skipped turns, split-output drift, changed token counts, and prompt-base
+restarts.</p>
 </section>
 <section id="fan-out-semantics">
 <h2>Fan-out Semantics<a class="headerlink" href="#fan-out-semantics" title="Link to this heading">#</a></h2>

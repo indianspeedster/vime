@@ -115,12 +115,11 @@ All set in the launcher; tune per cluster.
 | `SWE_CLAUDE_EXTRA_ARGS` | (see launcher) | Extra flags appended to the `claude` CLI invocation — registers the read-only `investigator` sub-agent, disables `WebFetch`/`WebSearch`, disables slash commands. |
 | `SWE_CC_PROMPT` | unset | Optional override for the user-turn prompt. Setting this to require sub-agent dispatch is the most reliable way to maximize fan-out. |
 
-`--rollout-max-response-len` is the per-turn generation cap passed to each vLLM
-`/inference/v1/generate` call as the sampling-params `max_tokens`.
-`--rollout-max-context-len` is the multi-turn prompt+response budget enforced
-only during generation: each turn clamps the generation length to the remaining
-context. Trajectory merge/export keeps the emitted segments and does not drop
-them for length.
+`--rollout-max-response-len` is the per-turn generation cap passed to each
+vLLM `/inference/v1/generate` call as `max_tokens`. `--rollout-max-context-len` is the
+multi-turn prompt+response budget enforced only during generation: each turn
+clamps `max_tokens` to the remaining context. Trajectory merge/export keeps
+the emitted segments and does not drop them for length.
 The Anthropic adapter reuses `--vllm-tool-call-parser` and
 `--vllm-reasoning-parser` for output parsing, so those flags must match the
 served model.
@@ -138,9 +137,8 @@ The Anthropic adapter therefore follows a **string in, token out** contract:
 - Each incoming message history is rendered with the served model's chat
   template and sent to vLLM as `token_ids`.
 - vLLM's `/inference/v1/generate` is called with `logprobs` set; the adapter
-  records the exact `prompt_ids`, sampled `output_ids` (`choices[0].token_ids`),
-  and per-token rollout logprobs (`choices[0].logprobs.content[i].logprob`) for
-  that turn.
+  records the exact `prompt_ids`, sampled `output_ids`, and per-token rollout
+  logprobs for that turn.
 - At training export time, samples are assembled from those saved token ids.
   The decoded `response` field is only a readable sidecar; it is not
   re-tokenized to recover the training sequence.
@@ -162,6 +160,9 @@ That last case is the important correctness guard. A re-tokenization mismatch
 can make a string-level conversation look continuous while token-level
 provenance is broken. vime keeps the context needed to continue the agent, but
 does not backprop through tokens whose sampled origin can no longer be proven.
+The unit tests in `tests/test_agent_trajectory.py` cover matched prefixes,
+skipped turns, split-output drift, changed token counts, and prompt-base
+restarts.
 
 ## Fan-out Semantics
 
