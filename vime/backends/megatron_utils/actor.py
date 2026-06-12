@@ -4,6 +4,7 @@ import random
 from argparse import Namespace
 from contextlib import nullcontext
 
+import vime.backends.megatron_utils.npu_attention_patch
 import mindspeed.megatron_adaptor
 import numpy as np
 import ray
