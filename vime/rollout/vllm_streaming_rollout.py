@@ -152,6 +152,13 @@ async def generate_streaming(args: Namespace, sample: Sample, sampling_params: d
             "stream": True,
         }
 
+    # vLLM only emits the terminal usage chunk for an SSE stream when the request
+    # asks for it (should_include_usage gates on stream_options.include_usage).
+    # Without this the loop below never observes `usage`, so prompt_tokens and the
+    # prefix-cache cached_tokens are never recorded on the streaming path. The
+    # usage-only chunk (choices=[], usage=...) is already handled in the loop.
+    payload["stream_options"] = {"include_usage": True}
+
     # Snapshot pre-call sample state. vLLM's SSE chunks are *deltas* within this
     # call; on each chunk we append the delta and rebuild the post-call view of
     # the sample = prior state + accumulated deltas. A mid-stream break leaves
@@ -267,6 +274,11 @@ async def generate_streaming(args: Namespace, sample: Sample, sampling_params: d
         if last_usage:
             meta["prompt_tokens"] = last_usage.get("prompt_tokens", 0)
             meta["completion_tokens"] = last_usage.get("completion_tokens", 0)
+            # vLLM reports the prefix-cache hit count nested under prompt_tokens_details
+            # (only populated when the server runs with --enable-prompt-tokens-details).
+            # Surface it so Sample.PrefixCacheInfo.add can populate prefix_cache_hit_rate;
+            # without this the numerator is pinned to 0 and the metric always reads 0.
+            meta["cached_tokens"] = (last_usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0)
         if new_response_tokens:
             meta["output_token_logprobs"] = [
                 [float(lp), int(tid)] for lp, tid in zip(new_response_log_probs, new_response_tokens, strict=True)

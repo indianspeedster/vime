@@ -399,6 +399,11 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     if usage:
         meta["prompt_tokens"] = usage.get("prompt_tokens", 0)
         meta["completion_tokens"] = usage.get("completion_tokens", 0)
+        # vLLM reports the prefix-cache hit count nested under prompt_tokens_details
+        # (only populated when the server runs with --enable-prompt-tokens-details).
+        # Surface it so Sample.PrefixCacheInfo.add can populate prefix_cache_hit_rate;
+        # without this the numerator is pinned to 0 and the metric always reads 0.
+        meta["cached_tokens"] = (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0)
     sample.update_from_meta_info(args, meta)
 
     return sample
