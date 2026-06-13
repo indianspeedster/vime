@@ -55,7 +55,8 @@ class RayTrainGroup:
 
         env_vars = {
             "HCCL_CUMEM_ENABLE": os.environ.get("HCCL_CUMEM_ENABLE", "0"),
-            **{name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST},
+            # NPU: let Ray manage ASCEND_RT_VISIBLE_DEVICES per worker
+            # **{name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST},
             **self.args.train_env_vars,
         }
 

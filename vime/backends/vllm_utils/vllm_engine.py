@@ -966,6 +966,7 @@ class VLLMEngine(RayActor):
             "dtype_names": dtype_names,
             "shapes": [list(s) for s in shapes],
             "packed": bool(packed),
+            "is_checkpoint_format": False,
         }
         return self._post_vllm_update_weights_http(update_info)
 

@@ -124,10 +124,11 @@ class ServerGroup:
             )
 
             env_vars = {name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST}
+            env_vars["ASCEND_RT_VISIBLE_DEVICES"] = ",".join(str(base_gpu_id + j) for j in range(num_gpu_per_engine))
             rollout_engine = RolloutRayActor.options(
                 num_cpus=num_cpus,
                 num_gpus=0,
-                resources={"NPU": num_gpus},
+                resources={"NPU": 0},
                 scheduling_strategy=scheduling_strategy,
                 runtime_env={
                     "env_vars": env_vars,
