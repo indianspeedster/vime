@@ -429,12 +429,6 @@ def build_vllm_cmd_and_env(server_args: dict[str, Any]) -> tuple[list[str], dict
     else:
         cmd += ["--weight-transfer-config", '{"backend":"nccl"}']
 
-    if getattr(args, "colocate", False) and "--worker-extension-cls" not in cmd:
-        cmd += [
-            "--worker-extension-cls",
-            "vime.backends.megatron_utils.update_weight.update_weight_from_tensor.vLLMColocateWorkerExtension",
-        ]
-
     worker_type = server_args.get("worker_type", "regular")
     if worker_type in ("prefill", "decode") and topology.node_rank == 0:
         env["VLLM_NIXL_SIDE_CHANNEL_HOST"] = host_for_subprocess
@@ -705,9 +699,10 @@ class VLLMEngine(RayActor):
         weight_version: str | None = None,
         flush_cache: bool = False,
     ) -> dict | None:
-        """POST ``IPCWeightTransferUpdateInfo`` (names / dtype_names / shapes /
-        ipc_handles) to ``/update_weights``; record ``weight_version`` only on
-        success. ``ipc_handles`` are base64-cloudpickle'd (rebuild_fn closures).
+        """POST IPC update payload to vLLM's native ``/update_weights`` endpoint.
+
+        Uses vLLM's built-in ``IPCWeightTransferEngine.receive_weights`` which
+        handles GPU UUID routing and device_index remapping internally.
         """
         if self.node_rank != 0:
             return None
@@ -718,47 +713,9 @@ class VLLMEngine(RayActor):
         if flush_cache:
             self.flush_cache()
 
-        response = self._make_request(
-            "collective_rpc",
-            {"method": "update_weights_chunk", "kwargs": {"update_info": payload}},
-        )
+        response = self._post_vllm_update_weights_http(payload)
         if weight_version is not None:
             self._weight_version = str(weight_version)
-        return response
-
-    def update_weights_chunk(self, update_info: dict) -> dict:
-        """POST ``/update_weights_chunk`` with a single named-tensor chunk.
-
-        Mirrors the SkyRL ``RemoteInferenceClient.update_weights_chunk`` API.
-        Must be called between :meth:`start_weight_update` and
-        :meth:`finish_weight_update`.
-
-        Unlike :meth:`update_weights`, ``update_info`` is the *inner* payload
-        dict (``names``, ``dtype_names``, ``shapes``, and one of
-        ``ipc_handles`` / ``ipc_handles_pickled`` for IPC, or ``packed`` for
-        NCCL) — **not** wrapped in ``{"update_info": ...}``.
-
-        If ``ipc_handles`` are present (raw CUDA callables produced by
-        ``reduce_tensor``), they are serialised with cloudpickle + base64 so
-        vLLM can deserialise them when
-        ``VLLM_ALLOW_INSECURE_SERIALIZATION=1`` is set.
-        """
-        if self.node_rank != 0:
-            return {"ok": True, "skipped": True}
-
-        import base64
-
-        import cloudpickle
-
-        payload = dict(update_info)
-        if payload.get("ipc_handles") is not None:
-            payload["ipc_handles_pickled"] = base64.b64encode(cloudpickle.dumps(payload.pop("ipc_handles"))).decode(
-                "utf-8"
-            )
-        response = self._make_request(
-            "collective_rpc",
-            {"method": "update_weights_chunk", "kwargs": {"update_info": payload}},
-        )
         return response
 
     def flush_cache(self):
