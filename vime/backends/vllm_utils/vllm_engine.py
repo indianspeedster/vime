@@ -833,6 +833,13 @@ class VLLMEngine(RayActor):
         """
         return self._make_request("finish_weight_update", {})
 
+    # TODO: FP8 expert scale patching after layerwise reload.
+    # vLLM's layerwise reload drops FP8 scale_inv (see fp8-nan-bug-deep-dive.md).
+    # Pre-#246 this was done via worker extension collective_rpc. Post-#246 the
+    # worker extension is removed; a new mechanism (e.g. vLLM native hook or
+    # HTTP endpoint) is needed. See apply_fp8_expert_scales() in
+    # update_weight_from_tensor.py for the scale-patching logic.
+
     def check_weights(self, action: str):
         """No vLLM ``weights_checker`` route; return a placeholder dict."""
         del action
