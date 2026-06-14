@@ -33,9 +33,7 @@
 
 ### 选择训练后端
 
-vime 支持多种训练后端，可以通过 `--train-backend` 参数进行选择：
-
-- `megatron`（默认）：使用 Megatron-LM 作为训练后端，支持大规模模型的高效训练。
+vime 当前使用 Megatron-LM 作为训练后端，用于支持大规模模型的高效训练。
 
 ### 加载 megatron
 
@@ -148,7 +146,7 @@ vLLM 的加载非常简单，只需要：
 - 在第一个训练步之前，vime 会把 megatron 里的参数同步给 vLLM，所以 `--hf-checkpoint` 中不需要有最新的训练参数，在续训的时候也不需要更换 hf ckpt；
 - vLLM 默认会从 huggingface ckpt 中 `config.json` 读取模型的最大 context length，可以使用 `--vllm-max-model-len` 参数来对这个值进行覆盖，从而支持进行更长的推理；
 - 在训推一体的训练过程中，虽然 megatron 和 vLLM 会先后 offload，但是还是需要为对方留有一些空间，需要通过减小 `--vllm-gpu-memory-utilization` 来调整 vLLM 的显存占用总量。
-- vime 支持透传 vllm-router 的参数，方式是在原参数名前加上 `router` 前缀。例如，vllm-router 的 `--balance-abs-threshold` 参数需要设置为 `--router-balance-abs-threshold`。由于 vllm-router 默认使用 cache-aware routing，可能会导致请求分配不均衡的问题。可以通过设置 `--router-balance-abs-threshold 0` 来强制均衡分配，但这可能会影响多轮对话场景下 prefix cache 的命中率。
+- vime 支持透传 vllm-router 的参数，方式是在原参数名前加上 `router` 前缀。例如，vllm-router 的 `--balance-abs-threshold` 参数需要设置为 `--router-balance-abs-threshold`。vime 默认使用 `consistent_hash` 路由策略。暂时不支持 cache-aware routing。可以通过设置 `--router-balance-abs-threshold 0` 来强制均衡分配，但这可能会影响多轮对话场景下 prefix cache 的命中率。
 
 对于一些 vLLM 的自定义以及 vime 引入 vLLM 的原理，请见 vLLM 使用方法一节。
 

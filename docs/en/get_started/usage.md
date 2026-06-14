@@ -31,9 +31,8 @@ Additionally, vime supports Prefill and Decode disaggregation (PD Disaggregation
 
 ### Choosing Training Backend
 
-vime supports multiple training backends, which can be selected via the `--train-backend` parameter:
-
-- `megatron` (default): Uses Megatron-LM as the training backend, supporting efficient training of large-scale models.
+vime currently supports Megatron-LM as its training backend for efficient
+large-scale model training.
 
 ### Loading Megatron
 
@@ -145,7 +144,7 @@ Note:
   - Before the first training step, vime will synchronize the parameters from Megatron to vLLM. Therefore, the `--hf-checkpoint` does not need to contain the latest training parameters, and you do not need to change the HF checkpoint when resuming training.
   - By default, vLLM reads the maximum context length from the `config.json` in the Hugging Face checkpoint. You can use the `--vllm-max-model-len` parameter to override this value to support longer inference.
   - During co-located training and inference, although Megatron and vLLM will offload sequentially, they still need to leave some memory for each other. You need to adjust vLLM's total VRAM usage by reducing `--vllm-gpu-memory-utilization`.
-  - vime supports passing through vllm-router parameters by adding a `router` prefix to the original parameter name. For example, vllm-router's `--balance-abs-threshold` parameter should be set as `--router-balance-abs-threshold`. Since vllm-router uses cache-aware routing by default, it may cause uneven request distribution. You can set `--router-balance-abs-threshold 0` to force balanced distribution, but this may affect prefix cache hit rate in multi-turn conversation scenarios.
+  - vime supports passing through vllm-router parameters by adding a `router` prefix to the original parameter name. For example, vllm-router's `--balance-abs-threshold` parameter should be set as `--router-balance-abs-threshold`. vime uses `consistent_hash` routing by default. cache-aware routing is not supported for now. You can set `--router-balance-abs-threshold 0` to force balanced distribution, but this may affect prefix cache hit rate in multi-turn conversation scenarios.
 
 For details on some of vLLM's customizations and the principles behind how vime incorporates vLLM, please see the "How to Use vLLM" section.
 
