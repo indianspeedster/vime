@@ -169,7 +169,7 @@ def _build_inference_sampling_params(sampling_params: dict[str, Any]) -> dict[st
         "max_tokens": sampling_params["max_new_tokens"],
         "temperature": sampling_params["temperature"],
         "top_p": sampling_params["top_p"],
-        "logprobs": 1,
+        "logprobs": 0,
     }
     tk = sampling_params.get("top_k")
     if tk is not None and (tk > 0 or tk == -1):
@@ -346,22 +346,31 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
 
     choice = output["choices"][0]
 
-    # Parse token_ids and logprobs from vLLM response
-    new_response_tokens = choice.get("token_ids") or []
-    new_response_log_probs: list[float] = []
-    lp = choice.get("logprobs")
-    if isinstance(lp, dict):
-        content_items = lp.get("content") or []
-        new_response_log_probs = [
-            float(item.get("logprob", 0.0)) if isinstance(item, dict) else 0.0 for item in content_items
-        ]
-    if not new_response_log_probs:
-        new_response_log_probs = [0.0] * len(new_response_tokens)
+    clp = choice.get("compact_logprobs")
+    if isinstance(clp, list) and clp:
+        new_response_tokens = [int(pair[1]) for pair in clp]
+        new_response_log_probs = [float(pair[0]) for pair in clp]
+    else:
+        new_response_tokens = choice.get("token_ids") or []
+        new_response_log_probs: list[float] = []
+        lp = choice.get("logprobs")
+        if isinstance(lp, dict):
+            content_items = lp.get("content") or []
+            new_response_log_probs = [
+                float(item.get("logprob", 0.0)) if isinstance(item, dict) else 0.0 for item in content_items
+            ]
+        if not new_response_log_probs:
+            new_response_log_probs = [0.0] * len(new_response_tokens)
 
-    # Decode text from token_ids
-    skip_sp = sampling_params.get("skip_special_tokens")
-    skip_decode = True if skip_sp is None else bool(skip_sp)
-    text = state.tokenizer.decode(new_response_tokens, skip_special_tokens=skip_decode) if new_response_tokens else ""
+    server_text = choice.get("text")
+    if server_text is not None:
+        text = server_text
+    elif new_response_tokens:
+        skip_sp = sampling_params.get("skip_special_tokens")
+        skip_decode = True if skip_sp is None else bool(skip_sp)
+        text = await asyncio.to_thread(state.tokenizer.decode, new_response_tokens, skip_special_tokens=skip_decode)
+    else:
+        text = ""
 
     sample.tokens = sample.tokens + new_response_tokens
     sample.response_length += len(new_response_tokens)
