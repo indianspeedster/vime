@@ -1,15 +1,56 @@
-"""Unit tests for ``vime.backends.vllm_utils.vllm_engine``."""
+"""CPU unit tests for ``vime.backends.vllm_utils.vllm_engine``."""
 
 from __future__ import annotations
 
 import dataclasses
 import json
+import sys
+from pathlib import Path
+from types import SimpleNamespace
 
+_tests_root = Path(__file__).resolve().parents[1]
+if str(_tests_root) not in sys.path:
+    sys.path.insert(0, str(_tests_root))
+
+import _unit_stubs
 import pytest
 import requests
 import torch
 
+_unit_stubs.install_vllm_cli_stubs()
+
 from vime.backends.vllm_utils import vllm_engine as mod
+
+NUM_GPUS = 0
+
+
+@pytest.fixture
+def vllm_args() -> SimpleNamespace:
+    return SimpleNamespace(
+        rollout_external=True,
+        hf_checkpoint="/tmp/model",
+        vllm_router_ip=None,
+        vllm_router_port=None,
+        num_gpus_per_node=8,
+        rollout_num_gpus_per_engine=4,
+        colocate=False,
+        debug_rollout_only=False,
+        actor_num_gpus_per_node=4,
+        actor_num_nodes=1,
+        use_critic=False,
+        critic_num_gpus_per_node=0,
+        critic_num_nodes=0,
+    )
+
+
+@pytest.fixture
+def vllm_engine(vllm_args):
+    from vime.backends.vllm_utils.vllm_engine import VLLMEngine
+
+    engine = VLLMEngine(vllm_args, rank=0)
+    engine.server_host = "127.0.0.1"
+    engine.server_port = 8765
+    return engine
 
 
 @pytest.fixture(autouse=True)
@@ -672,3 +713,7 @@ def test_control_plane_methods_noop_on_headless_worker(vllm_engine, monkeypatch)
     assert vllm_engine.update_weights_from_distributed(["w"], [torch.float32], [[1]], "g") is None
     assert vllm_engine.release_memory_occupation() is None
     assert vllm_engine.resume_memory_occupation() is None
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__]))

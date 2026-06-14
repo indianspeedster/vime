@@ -1,4 +1,4 @@
-"""Unit tests for colocated vLLM IPC weight sync (UpdateWeightFromTensor)."""
+"""CPU unit tests for colocated vLLM IPC weight sync (UpdateWeightFromTensor)."""
 
 from __future__ import annotations
 
@@ -7,36 +7,26 @@ import sys
 import types
 from argparse import Namespace
 from dataclasses import dataclass, field
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+_tests_root = Path(__file__).resolve().parents[1]
+if str(_tests_root) not in sys.path:
+    sys.path.insert(0, str(_tests_root))
+
+import _unit_stubs
 import pytest
 import torch
 
 MODULE_PATH = "vime.backends.megatron_utils.update_weight.update_weight_from_tensor"
 
+NUM_GPUS = 0
+
 
 def _install_stubs():
-    mpu_stub = MagicMock()
-    mpu_stub.get_data_parallel_rank.return_value = 0
-    mpu_stub.get_tensor_model_parallel_rank.return_value = 0
-    mpu_stub.get_tensor_model_parallel_world_size.return_value = 2
-    mpu_stub.get_tensor_model_parallel_group.return_value = "tp_group"
-    mpu_stub.get_pipeline_model_parallel_rank.return_value = 0
-
-    megatron_core = types.ModuleType("megatron.core")
-    megatron_core.mpu = mpu_stub
-    megatron_mod = types.ModuleType("megatron")
-    megatron_mod.core = megatron_core
-    sys.modules.setdefault("megatron", megatron_mod)
-    sys.modules.setdefault("megatron.core", megatron_core)
-
-    ray_mod = types.ModuleType("ray")
-    ray_mod.get = lambda refs: refs
-    ray_mod.ObjectRef = object
-    ray_mod.actor = types.ModuleType("ray.actor")
-    ray_mod.actor.ActorHandle = object
-    sys.modules.setdefault("ray", ray_mod)
-    sys.modules.setdefault("ray.actor", ray_mod.actor)
+    _unit_stubs.install_megatron_mpu_stub()
+    _unit_stubs.install_ray_stub()
+    _unit_stubs.install_vime_distributed_utils_stub()
 
     import torch.distributed as _dist
 
@@ -51,10 +41,6 @@ def _install_stubs():
     _dist.get_process_group_ranks = dist_stub.get_process_group_ranks
     _dist.barrier = dist_stub.barrier
     _dist.all_gather_object = dist_stub.all_gather_object
-
-    vime_utils = types.ModuleType("vime.utils.distributed_utils")
-    vime_utils.get_gloo_group = MagicMock(return_value="gloo")
-    sys.modules.setdefault("vime.utils.distributed_utils", vime_utils)
 
     hf_iter_stub = MagicMock()
     hf_iter_stub.get_hf_weight_chunks.return_value = iter([])
@@ -104,7 +90,7 @@ _DIST_ATTRS = ("get_rank", "get_world_size", "get_process_group_ranks", "barrier
 def upw_vllm():
     import torch.distributed as _dist
 
-    saved_mods = {k: sys.modules.get(k) for k in (*_STUBBED_MODULES, MODULE_PATH)}
+    saved_mods = _unit_stubs.save_sys_modules((*_STUBBED_MODULES, MODULE_PATH))
     saved_dist = {a: getattr(_dist, a, None) for a in _DIST_ATTRS}
     # Pop first so _install_stubs()'s setdefault() actually installs stubs (hermetic).
     for k in _STUBBED_MODULES:
@@ -114,11 +100,7 @@ def upw_vllm():
     try:
         yield importlib.import_module(MODULE_PATH)
     finally:
-        for k, original in saved_mods.items():
-            if original is None:
-                sys.modules.pop(k, None)
-            else:
-                sys.modules[k] = original
+        _unit_stubs.restore_sys_modules(saved_mods)
         for a, original in saved_dist.items():
             if original is not None:
                 setattr(_dist, a, original)
@@ -443,3 +425,7 @@ def test_ipc_init_runs_once_in_connect(upw_vllm):
         )
     assert len(engines2[0].init_weight_transfer_engine.calls) == 0
     assert len(engines2[1].init_weight_transfer_engine.calls) == 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__]))

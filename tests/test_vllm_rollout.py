@@ -1,18 +1,29 @@
-"""Unit tests for ``vime.rollout.vllm_rollout`` helpers and mocked async paths."""
+"""CPU unit tests for ``vime.rollout.vllm_rollout`` helpers and mocked async paths."""
 
 from __future__ import annotations
 
 import asyncio
 import base64
 import io
+import sys
 from argparse import Namespace
 from contextlib import contextmanager
+from pathlib import Path
 from unittest.mock import AsyncMock
 
+_tests_root = Path(__file__).resolve().parent
+if str(_tests_root) not in sys.path:
+    sys.path.insert(0, str(_tests_root))
+
+import _unit_stubs
 import numpy as np
 import pytest
 
+_unit_stubs.install_rollout_optional_stubs()
+
 from vime.rollout import vllm_rollout as mod
+
+NUM_GPUS = 0
 from vime.utils.eval_config import EvalDatasetConfig
 from vime.utils.types import Sample
 
@@ -529,3 +540,7 @@ def test_eval_rollout_passk_requests_do_not_share_session_ids(patch_generate_sta
     assert None not in seen_session_ids
     assert len(set(seen_session_ids)) == 2
     assert result[dataset_cfg.name]["samples"][0].session_id != result[dataset_cfg.name]["samples"][1].session_id
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__]))
