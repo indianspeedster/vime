@@ -58,7 +58,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="zh"/>
   <meta name="docsearch:version" content="0.0.1" />
-    <meta name="docbuild:last-update" content="2026 年 06 月 11 日"/>
+    <meta name="docbuild:last-update" content="2026 年 06 月 14 日"/>
   </head>
   
   
@@ -474,7 +474,7 @@
 <h3>硬件支持说明<a class="headerlink" href="#id3" title="链接到此标题。">#</a></h3>
 <p><strong>vime</strong> 支持多种 NVIDIA GPU 硬件平台：</p>
 <ul class="simple">
-<li><p><strong>B200 系列</strong>：完全支持，运行步骤与 H 系列完全相同</p></li>
+<li><p><strong>GB200 / GB300 / B200 / 300 系列</strong>：完全支持，运行步骤与 H 系列完全相同</p></li>
 <li><p><strong>H 系列 (H100/H200)</strong>：官方支持，具有完整的 CI 测试保护，运行稳定可靠</p></li>
 </ul>
 <p><strong>重要说明</strong>：</p>
@@ -483,7 +483,6 @@
 <li><p>Megatron 后端在 H 卡上具有 CI 保护，经过充分测试验证，推荐生产环境使用</p></li>
 <li><p>B 卡基本功能稳定，可作为开发和测试参考，但暂无 CI 保护</p></li>
 <li><p>两种硬件平台使用完全相同的安装和启动流程</p></li>
-<li><p>对于不方便使用 docker 的场景，请参考 <a class="reference external" href="https://github.com/vllm-project/vime/blob/main/build_conda.sh">build_conda.sh</a>。</p></li>
 </ul>
 </section>
 <section id="docker">
@@ -993,7 +992,7 @@ vime 使用 <code class="docutils literal notranslate"><span class="pre">vllm-ro
 </section>
 <section id="moe">
 <h2>大规模 MOE 模型的多机训练<a class="headerlink" href="#moe" title="链接到此标题。">#</a></h2>
-<p>为了启动多机任务，首先需要启动一个 ray 集群，即在 node 0 运行：</p>
+<p>如果使用 Ray 进行多机训练，可以参考下面的方式启动集群：</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Node0（HEAD）</span>
 ray<span class="w"> </span>start<span class="w"> </span>--head<span class="w"> </span>--node-ip-address<span class="w"> </span><span class="si">${</span><span class="nv">MASTER_ADDR</span><span class="si">}</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--num-gpus<span class="w"> </span><span class="m">8</span><span class="w"> </span>--disable-usage-stats
@@ -1002,7 +1001,7 @@ ray<span class="w"> </span>start<span class="w"> </span>--head<span class="w"> <
 ray<span class="w"> </span>start<span class="w"> </span>--address<span class="o">=</span><span class="si">${</span><span class="nv">MASTER_ADDR</span><span class="si">}</span>:6379<span class="w"> </span>--num-gpus<span class="w"> </span><span class="m">8</span>
 </pre></div>
 </div>
-<p>在 ray 集群启动后，可以在 node 0 提交任务，例如：</p>
+<p>在 Ray 集群启动后，可以在 node 0 提交任务，例如：</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ray<span class="w"> </span>job<span class="w"> </span>submit<span class="w"> </span>--address<span class="o">=</span><span class="s2">&quot;http://127.0.0.1:8265&quot;</span><span class="w"> </span><span class="se">\</span>
 <span class="w">   </span>--runtime-env-json<span class="o">=</span><span class="s1">&#39;{</span>
 <span class="s1">     &quot;env_vars&quot;: {</span>
@@ -1141,7 +1140,7 @@ ray<span class="w"> </span>start<span class="w"> </span>--address<span class="o"
   
   <div class="footer-item">
     <p class="last-updated">
-  最后更新于 2026 年 06 月 11 日.
+  最后更新于 2026 年 06 月 14 日.
   <br/>
 </p>
   </div>

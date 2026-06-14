@@ -58,7 +58,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="0.0.1" />
-    <meta name="docbuild:last-update" content="Jun 11, 2026"/>
+    <meta name="docbuild:last-update" content="Jun 14, 2026"/>
   </head>
   
   
@@ -474,7 +474,7 @@
 <h3>Hardware Support<a class="headerlink" href="#hardware-support" title="Link to this heading">#</a></h3>
 <p><strong>vime</strong> supports multiple NVIDIA GPU hardware platforms:</p>
 <ul class="simple">
-<li><p><strong>B200 Series</strong>: Fully supported with identical setup steps as H-series GPUs</p></li>
+<li><p><strong>GB200 / GB300 / B200 / 300 Series</strong>: Fully supported with identical setup steps as H-series GPUs</p></li>
 <li><p><strong>H-Series (H100/H200)</strong>: Official support with comprehensive CI testing and stable performance</p></li>
 </ul>
 <p><strong>Important Notes</strong>:</p>
@@ -483,7 +483,6 @@
 <li><p>Megatron backend on H-series GPUs has CI protection, thoroughly validated, recommended for production environments</p></li>
 <li><p>B-series basic functionality is stable and suitable for development/testing, but currently lacks CI protection</p></li>
 <li><p>Both hardware platforms use identical installation and startup procedures</p></li>
-<li><p>For scenarios where Docker is not convenient, please refer to <a class="reference external" href="https://github.com/vllm-project/vime/blob/main/build_conda.sh">build_conda.sh</a>.</p></li>
 </ul>
 </section>
 <section id="pull-and-start-docker-container">
@@ -991,7 +990,7 @@ The <code class="docutils literal notranslate"><span class="pre">sample.metadata
 </section>
 <section id="multi-node-training-for-large-scale-moe-models">
 <h2>Multi-Node Training for Large-Scale MOE Models<a class="headerlink" href="#multi-node-training-for-large-scale-moe-models" title="Link to this heading">#</a></h2>
-<p>To start a multi-node task, you need to first start a Ray cluster. On node 0, run:</p>
+<p>If you use Ray for multi-node training, one option is to start the cluster as follows:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Node0 (HEAD)</span>
 ray<span class="w"> </span>start<span class="w"> </span>--head<span class="w"> </span>--node-ip-address<span class="w"> </span><span class="si">${</span><span class="nv">MASTER_ADDR</span><span class="si">}</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--num-gpus<span class="w"> </span><span class="m">8</span><span class="w"> </span>--disable-usage-stats
@@ -1146,7 +1145,7 @@ By Vime Team
   
   <div class="footer-item">
     <p class="last-updated">
-  Last updated on Jun 11, 2026.
+  Last updated on Jun 14, 2026.
   <br/>
 </p>
   </div>
