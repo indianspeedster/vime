@@ -380,5 +380,3 @@ def _send_to_colocated_engine(
         refs.append(ipc_engine.update_weights_from_tensor.remote(**merged, weight_version=str(weight_version)))
 
     return refs, weight_refs
-
-
