@@ -32,32 +32,24 @@ NODE_INSTANCE_TYPE = "gpu-h100-sxm"
 
 # Known hardware-fit failures on the pool's 80 GB H100s — test-level issues,
 # not pipeline ones (PR #239, builds #6/#7):
-#   * gsm8k_async_short: the actor GPU needs >80 GB as tuned
-#     (--max-tokens-per-gpu 9216 with the 248k vocab; 67 GiB live allocations
-#     after expandable_segments removed fragmentation). The sync twin passes.
-#   * parallel_check: cross-layout grad-norm invariance (CP=2) diverges ~4%
-#     from the same-node baseline recording (likely NVLS reduction ordering).
+#   * gsm8k_async_short: FIXED — max-tokens-per-gpu reduced 9216→2048 (peak
+#     39.6 GB on H200, well within H100 80 GB). Root cause was Qwen3.5 248k
+#     vocab × 5 logits copies in calculate_log_probs_and_entropy.
+#   * parallel_check: cross-layout grad-norm invariance (TP4+per-token-loss)
+#     diverges ~12% on ~11% of rollout data (bimodal: most <1.5%, outliers
+#     10-20%). Confirmed same behavior in slime — Megatron FP reduction-order
+#     non-invariance, not a vime bug.
 # soft_fail keeps them running and visible (orange) without failing the
 # build; the GHA label jobs on the self-hosted boxes remain their
 # authoritative gate.
 SOFT_FAIL_ON_H100 = {
-    "test_qwen3.5_0.8B_gsm8k_async_short.py",
     "test_qwen3_0.6B_parallel_check.py",
 }
 
 # (test_file, num_gpus, extra_args, env overrides)
 SUITES = {
     "short": [
-        # expandable_segments: borderline fit on the pool's 80 GB H100s — OOMed
-        # in compute_log_probs with 7 GiB reserved-but-unallocated (build #6).
-        # Scoped to this test only: vLLM's sleep-mode CuMemAllocator can
-        # conflict with expandable segments, so don't set it pod-wide.
-        (
-            "test_qwen3.5_0.8B_gsm8k_async_short.py",
-            4,
-            "",
-            {"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"},
-        ),
+        ("test_qwen3.5_0.8B_gsm8k_async_short.py", 4, "", {}),
         ("test_qwen3.5_0.8B_gsm8k_short.py", 4, "", {}),
         ("test_qwen2.5_0.5B_ppo_critic_only_short.py", 4, "", {}),
         ("test_qwen2.5_0.5B_fully_async_short.py", 4, "", {}),
