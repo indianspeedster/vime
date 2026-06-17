@@ -6,6 +6,7 @@ import torch
 import torch.distributed as dist
 
 from vime.utils.memory_utils import available_memory, clear_memory, print_memory
+from vime.utils.common import is_npu
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +96,7 @@ def monkey_patch_torch_dist():
     dist.all_gather = get_new_comm_function(dist.all_gather)
     dist.all_gather_into_tensor = get_new_comm_function(dist.all_gather_into_tensor, "all_gather_into_tensor")
     dist.all_gather_object = get_new_comm_function(dist.all_gather_object)
+    dist.gather_object = get_new_comm_function(dist.gather_object)
     dist.all_to_all = get_new_comm_function(dist.all_to_all)
     dist.all_to_all_single = get_new_comm_function(dist.all_to_all_single, "all_to_all_single")
     dist.broadcast = get_new_comm_function(dist.broadcast)
@@ -180,10 +182,13 @@ class ReloadableProcessGroup(torch.distributed.ProcessGroup):
         reloadable_groups = ReloadableProcessGroup.GROUPS.get(pid, [])
         logger.info(f"Reloading {len(reloadable_groups)} process groups in pid {pid}")
         old_new_group = old_new_group_dict.get(pid)
+        backend = "nccl"
+        if is_npu():
+            backend = "hccl"
         for reloadable_group in reloadable_groups:
             if reloadable_group.group is not None:
                 continue
-            group = old_new_group(ranks=reloadable_group.group_info["ranks"], backend="hccl")
+            group = old_new_group(ranks=reloadable_group.group_info["ranks"], backend=backend)
             reloadable_group.group = group
 
     def rank(self) -> int:

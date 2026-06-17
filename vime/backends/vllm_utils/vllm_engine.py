@@ -80,16 +80,19 @@ def get_base_gpu_id(args, rank):
 
 
 def _to_local_gpu_id(physical_gpu_id: int) -> int:
-    arvd = os.environ.get("ASCEND_RT_VISIBLE_DEVICES")
-    if not arvd:
+    if is_npu():
+        cvd = os.environ.get("ASCEND_RT_VISIBLE_DEVICES")
+    else:
+        cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if not cvd:
         return physical_gpu_id
-    visible = [int(x) for x in arvd.split(",") if x.strip() != ""]
+    visible = [int(x) for x in cvd.split(",") if x.strip() != ""]
     if physical_gpu_id in visible:
         return visible.index(physical_gpu_id)
     if 0 <= physical_gpu_id < len(visible):
         return physical_gpu_id
     raise RuntimeError(
-        f"NPU id {physical_gpu_id} is not valid under ASCEND_RT_VISIBLE_DEVICES={arvd}. "
+        f"GPU id {physical_gpu_id} is not valid under CUDA_VISIBLE_DEVICES={cvd}. "
         f"Expected one of {visible} (physical) or 0..{len(visible)-1} (local)."
     )
 
@@ -348,9 +351,12 @@ def build_vllm_subprocess_env(server_args: dict[str, Any]) -> dict[str, str]:
     """Child-process environment for ``vllm serve``."""
     args = server_args["args"]
     env = os.environ.copy()
-    env.pop("PYTORCH_NPU_ALLOC_CONF", None)
-    env.setdefault("HCCL_CUMEM_ENABLE", "0")
-    env["ASCEND_RT_VISIBLE_DEVICES"] = server_args["visible_devices"]
+    env.pop("PYTORCH_CUDA_ALLOC_CONF", None)
+    env.setdefault("NCCL_CUMEM_ENABLE", "0")
+    if is_npu():
+        env["ASCEND_RT_VISIBLE_DEVICES"] = server_args["visible_devices"]
+    else:
+        env["CUDA_VISIBLE_DEVICES"] = server_args["visible_devices"]
     env.setdefault("VLLM_SERVER_DEV_MODE", "1")
     if getattr(args, "vllm_enable_deterministic_inference", False):
         env["VLLM_BATCH_INVARIANT"] = "1"
