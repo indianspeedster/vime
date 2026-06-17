@@ -285,8 +285,8 @@ jobs:
 <% endif %>
 <% endfor %>
 
-  e2e-test-unit:
-    name: Unit & utils tests (pytest, in-image)
+  e2e-test-utils:
+    name: Utils tests (pytest, in-image)
     needs: pre-commit
     # Always-on regression gate (like e2e-test-plugin-contracts): runs on every
     # PR synchronize/label and on manual dispatch, no run-ci-* label required.
@@ -303,8 +303,8 @@ jobs:
         shell: bash
         run: |
           # Run inside the CI image: it ships megatron + torch, which the
-          # tests/unit/backends/megatron_utils/update_weight tests need at
-          # import time. CPU/mock only -> no --gpus / no GPU lock.
+          # tests/unit-style update-weight tests need at import time.
+          # CPU/mock only -> no --gpus / no GPU lock.
           docker run --rm \
             --network host \
             --ipc=host \
@@ -320,7 +320,7 @@ jobs:
               set -euo pipefail
               pip install -e . --no-deps --break-system-packages
               pip install -q pytest --break-system-packages
-              python -m pytest tests/unit tests/utils
+              python -m pytest tests/utils
             '
 
   e2e-test-changed-detect:
