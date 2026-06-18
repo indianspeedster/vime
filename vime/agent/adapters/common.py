@@ -96,8 +96,17 @@ def json_arguments(value: Any) -> str:
 
 
 def render_token_ids(chain: AdapterChain, tokenizer) -> list[int]:
+    msgs = chain.chat_messages
+    # Qwen3.5+/3.6 chat templates require exactly one system message at the
+    # start.  Claude Code may send multiple system messages across turns;
+    # merge them into one and hoist to position 0.
+    sys_msgs = [m for m in msgs if m.get("role") == "system"]
+    if len(sys_msgs) > 1 or (sys_msgs and msgs[0].get("role") != "system"):
+        merged_sys = "\n\n".join(m.get("content", "") for m in sys_msgs)
+        other_msgs = [m for m in msgs if m.get("role") != "system"]
+        msgs = [{"role": "system", "content": merged_sys}] + other_msgs if merged_sys else other_msgs
     enc = tokenizer.apply_chat_template(
-        chain.chat_messages,
+        msgs,
         tools=chain.tools_schema,
         tokenize=True,
         add_generation_prompt=True,

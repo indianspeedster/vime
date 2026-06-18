@@ -732,6 +732,13 @@ class RolloutManager:
             train_data["round_number"] = [sample.metadata["round_number"] for sample in samples]
 
         # Add rollout log probabilities for off-policy correction
+        _rlp_none_count = sum(1 for s in samples if s.rollout_log_probs is None)
+        _rlp_set_count = len(samples) - _rlp_none_count
+        logger.info("[rollout] rollout_log_probs check: samples[0].rollout_log_probs=%s, "
+                    "total=%d, set=%d, none=%d",
+                    "None" if samples[0].rollout_log_probs is None
+                    else f"len={len(samples[0].rollout_log_probs)}",
+                    len(samples), _rlp_set_count, _rlp_none_count)
         if samples[0].rollout_log_probs is not None:
             train_data["rollout_log_probs"] = [sample.rollout_log_probs for sample in samples]
 

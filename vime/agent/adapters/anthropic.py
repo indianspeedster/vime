@@ -58,7 +58,7 @@ class AnthropicAdapter(BaseAdapter):
 
     session_cls = Session
 
-    def __init__(self, *, tokenizer, vllm_url, tool_parser=None, reasoning_parser=None) -> None:
+    def __init__(self, *, tokenizer, vllm_url, tool_parser=None, reasoning_parser=None, model=None) -> None:
         super().__init__(
             tokenizer=tokenizer,
             vllm_url=vllm_url,
@@ -311,6 +311,7 @@ def _build_reply(target: Chain, output_ids: list[int], finish: str, app) -> tupl
     raw_output = tok.decode(output_ids, skip_special_tokens=False) if output_ids else ""
     parsed = parse_model_output(
         raw_output,
+        tokenizer=tok,
         tools_schema=target.tools_schema,
         tool_parser_name=app[TOOL_PARSER_KEY],
         reasoning_parser_name=app[REASONING_PARSER_KEY],
