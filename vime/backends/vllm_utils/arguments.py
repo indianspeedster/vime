@@ -51,13 +51,6 @@ def add_vllm_arguments(parser):
             "AND exports ``VLLM_BATCH_INVARIANT=1`` to the vLLM subprocess."
         ),
     )
-    parser.add_argument(
-        "--vllm-tool-call-parser",
-        dest="vllm_tool_call_parser",
-        type=str,
-        default=None,
-        help="vLLM tool-call parser name for agent output parsing (e.g. qwen3_coder).",
-    )
     _vllm_packed = parser.add_mutually_exclusive_group()
     _vllm_packed.add_argument(
         "--vllm-weight-sync-packed",
@@ -77,14 +70,9 @@ def add_vllm_arguments(parser):
 
     skipped_args = [
         "model",
-        "served_model_name",
         "config",
-        "tokenizer",
-        "tokenizer_mode",
-        "tokenizer_revision",
         "trust_remote_code",
         "seed",
-        "dtype",
         "tensor_parallel_size",
         "nnodes",
         "node_rank",
@@ -95,7 +83,6 @@ def add_vllm_arguments(parser):
         "port",
         "host",
         "enable_return_routed_experts",
-        "tool_call_parser",
     ]
 
     def _wrap_add_argument(target_add_argument):
