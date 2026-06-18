@@ -66,6 +66,7 @@ logger = logging.getLogger(__name__)
 
 SWE_TIME_BUDGET_SEC = int(os.environ.get("SWE_TIME_BUDGET_SEC", "1800"))
 SWE_EVAL_TIMEOUT_SEC = int(os.environ.get("SWE_EVAL_TIMEOUT_SEC", "600"))
+SWE_AGENT_MODE = os.environ.get("SWE_AGENT_MODE", "claude_code").strip().lower()
 # Wall-clock guard for the entire generate() call. Defaults to
 # SWE_TIME_BUDGET_SEC + SWE_EVAL_TIMEOUT_SEC + 180 (buffer for sandbox boot,
 # diff capture, etc). When exceeded, the in-flight sample is aborted with
@@ -107,6 +108,7 @@ class _State(metaclass=SingletonMeta):
         self.adapter = AnthropicAdapter(
             tokenizer=self.tokenizer,
             vllm_url=vllm_url,
+            model=args.hf_checkpoint,
             tool_parser=self.tool_parser,
             reasoning_parser=self.reasoning_parser,
         )
@@ -122,6 +124,9 @@ class _State(metaclass=SingletonMeta):
             runner_kwargs={"handler_cancellation": True},
         )
         self.adapter_url = adapter_url_override or f"http://{public_host}:{self.app_handle.port}"
+        # uniagent loop runs in-process (not in sandbox), so it can hit the
+        # adapter directly on localhost — no tunnel needed, no 429 rate-limits.
+        self.local_adapter_url = f"http://127.0.0.1:{self.app_handle.port}"
         logger.info(
             "[coding_agent_rl] tokenizer=%s adapter=%s max_context_len=%s tool_parser=%s reasoning_parser=%s",
             args.hf_checkpoint,
@@ -226,32 +231,67 @@ async def generate(args, sample: Sample, sampling_params: dict[str, Any]):
     state = _State(args)
     md = _metadata(sample)
     if not md["image"] or not md["workdir"]:
+        logger.warning("[coding_agent_rl] ABORT missing_image_or_workdir: image=%s workdir=%s label=%s",
+                       md.get("image"), md.get("workdir"), sample.label)
+        _save_instance_result(md.get("instance_id", "unknown"), None, 0, 0,
+                              abort_reason="missing_image_or_workdir", phase="init")
         return _abort_result(sample, "missing_image_or_workdir")
 
     instance_id = md["instance_id"]
     session_id = _start_session(state, sample, md, sampling_params)
     t0 = time.time()
+    _phase = "init"
     try:
         async with asyncio.timeout(SWE_GENERATE_GUARD_SEC):
-            async with sandbox.boot_agent_sandbox(md["image"]) as sb:
-                await sandbox.run_claude_code(
-                    sb,
-                    workdir=md["workdir"],
-                    session_id=session_id,
-                    adapter_url=state.adapter_url,
-                    time_budget_sec=SWE_TIME_BUDGET_SEC,
-                    problem_statement=md["problem_statement"],
-                    swepro=md["swepro"],
-                    pre_commands=md["pre_commands"],
-                )
+            _phase = "boot"
+            logger.info("[coding_agent_rl] %s: booting sandbox image=%s mode=%s ...", instance_id, md["image"], SWE_AGENT_MODE)
+            _boot_ctx = (
+                sandbox.boot_uniagent_sandbox(md["image"])
+                if SWE_AGENT_MODE == "uniagent"
+                else sandbox.boot_agent_sandbox(md["image"])
+            )
+            async with _boot_ctx as sb:
+                sb_id = getattr(sb, 'sandbox_id', 'unknown')
+                _phase = "agent"
+                if SWE_AGENT_MODE == "uniagent":
+                    logger.info("[coding_agent_rl] %s: sandbox booted (id=%s), running uniagent loop ...", instance_id, sb_id)
+                    await sandbox.run_uniagent_loop(
+                        sb,
+                        workdir=md["workdir"],
+                        session_id=session_id,
+                        adapter_url=state.local_adapter_url,
+                        time_budget_sec=SWE_TIME_BUDGET_SEC,
+                        problem_statement=md["problem_statement"],
+                        swepro=md["swepro"],
+                        pre_commands=md["pre_commands"],
+                    )
+                else:
+                    logger.info("[coding_agent_rl] %s: sandbox booted (id=%s), running claude-code ...", instance_id, sb_id)
+                    await sandbox.run_claude_code(
+                        sb,
+                        workdir=md["workdir"],
+                        session_id=session_id,
+                        adapter_url=state.adapter_url,
+                        time_budget_sec=SWE_TIME_BUDGET_SEC,
+                        problem_statement=md["problem_statement"],
+                        swepro=md["swepro"],
+                        pre_commands=md["pre_commands"],
+                    )
+                _phase = "diff"
+                logger.info("[coding_agent_rl] %s: agent done, capturing diff ...", instance_id)
                 diff_text = await sandbox.git_diff(sb, md["workdir"])
+                logger.info("[coding_agent_rl] %s: diff captured (%d chars), sandbox=%s",
+                           instance_id, len(diff_text or ""), sb_id)
 
+            _phase = "eval"
+            logger.info("[coding_agent_rl] %s: evaluating diff ...", instance_id)
             reward, is_solved, applied_cleanly = await sandbox.evaluate(
                 image=md["image"],
                 workdir=md["workdir"],
                 diff_text=diff_text,
                 swepro=md["swepro"],
                 eval_cmd=md["eval_cmd"],
+                swebench_metadata=md.get("swebench_metadata"),
                 pre_commands=md["pre_commands"],
                 timeout_sec=SWE_EVAL_TIMEOUT_SEC,
             )
@@ -260,8 +300,16 @@ async def generate(args, sample: Sample, sampling_params: dict[str, Any]):
                 is_solved=bool(is_solved),
                 applied_cleanly=bool(applied_cleanly),
             )
+            _phase = "merge"
+            _save_instance_result(instance_id, reward_result, time.time() - t0, len(diff_text or ""), phase="done")
             segments = await state.adapter.finish_session(session_id)
-            return _merge_samples(
+            # Count total model turns from adapter session
+            session_obj = state.adapter.store.get(session_id)
+            n_turns = len(session_obj.chain.messages) if session_obj and hasattr(session_obj, 'chain') else -1
+            logger.info("[coding_agent_rl] %s: reward=%.2f solved=%s diff=%d elapsed=%.0fs turns=%d segments=%d",
+                       instance_id, reward_result.reward, reward_result.is_solved,
+                       len(diff_text or ""), time.time() - t0, n_turns, len(segments))
+            result = _merge_samples(
                 sample=sample,
                 state=state,
                 segments=segments,
@@ -269,17 +317,30 @@ async def generate(args, sample: Sample, sampling_params: dict[str, Any]):
                 elapsed_sec=time.time() - t0,
                 instance_id=instance_id,
             )
+            if isinstance(result, list):
+                for i, s in enumerate(result):
+                    logger.info("[coding_agent_rl] %s: fanned[%d] tokens=%d rollout_log_probs=%s loss_mask=%d",
+                               instance_id, i, len(s.tokens or []),
+                               "None" if s.rollout_log_probs is None else f"len={len(s.rollout_log_probs)}",
+                               len(s.loss_mask or []))
+            return result
 
     except asyncio.TimeoutError:
+        elapsed = time.time() - t0
+        logger.error("[coding_agent_rl] %s: ABORT wall_clock_timeout after %.1fs", instance_id, elapsed)
         _log_timeout_diagnostic(t0)
+        _save_instance_result(instance_id, None, elapsed, 0, abort_reason="wall_clock_timeout", phase=_phase)
         return _abort_result(sample, "wall_clock_timeout")
     except Exception as e:
+        elapsed = time.time() - t0
         logger.error(
-            "[coding_agent_rl] %s: rollout failed: %s\n%s",
+            "[coding_agent_rl] %s: ABORT exception:%s after %.1fs\n%s",
             instance_id,
-            e,
+            type(e).__name__,
+            elapsed,
             traceback.format_exc(),
         )
+        _save_instance_result(instance_id, None, elapsed, 0, abort_reason=f"exception:{type(e).__name__}", phase=_phase)
         return _abort_result(sample, f"exception:{type(e).__name__}")
     finally:
         # Close the sid before next train step's release_memory_occupation;
@@ -310,6 +371,41 @@ def _log_timeout_diagnostic(t0: float) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Per-instance result persistence (survives container rm)
+# ---------------------------------------------------------------------------
+_RESULT_LOG = os.environ.get("SWE_RESULT_LOG", "/home/aoshen/vime/projects/vime_modal_sandbox/agent_run/results/instance_results.jsonl")
+
+def _save_instance_result(instance_id: str, rr: RewardResult, elapsed: float, diff_len: int,
+                          abort_reason: str | None = None, phase: str | None = None) -> None:
+    """Append one line per instance to a JSONL on shared storage.
+
+    Called on ALL exit paths (success, timeout, exception) so every instance
+    is accounted for. ``abort_reason`` is set for non-success exits.
+    ``phase`` indicates where in the pipeline the instance was when it exited
+    (boot / agent / diff / eval / merge).
+    """
+    import json as _json
+    record: dict = {
+        "instance_id": instance_id,
+        "reward": rr.reward if rr else 0.0,
+        "solved": rr.is_solved if rr else False,
+        "applied": rr.applied_cleanly if rr else False,
+        "elapsed_sec": round(elapsed, 1),
+        "diff_chars": diff_len,
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    if abort_reason:
+        record["abort_reason"] = abort_reason
+    if phase:
+        record["phase"] = phase
+    try:
+        with open(_RESULT_LOG, "a") as f:
+            f.write(_json.dumps(record) + "\n")
+    except Exception:
+        logger.warning("[coding_agent_rl] failed to write result log to %s", _RESULT_LOG)
+
+
+# ---------------------------------------------------------------------------
 # Metadata helpers
 # ---------------------------------------------------------------------------
 def _wrap_f2p_script(script: str | None) -> str | None:
@@ -335,6 +431,7 @@ def _metadata(sample: Sample) -> dict[str, Any]:
         "problem_statement": m.get("problem_statement") or _coerce_prompt(sample.prompt),
         "swepro": m.get("swepro"),
         "eval_cmd": m.get("eval_cmd") or _wrap_f2p_script(rem.get("f2p_script")),
+        "swebench_metadata": m.get("swebench_metadata"),
         "pre_commands": m.get("pre_commands") or rem.get("pre_commands"),
     }
 
@@ -358,6 +455,7 @@ def _abort(sample: Sample, reason: str) -> Sample:
     sample.response = ""
     sample.response_length = 1
     sample.loss_mask = [0]
+    sample.rollout_log_probs = [0.0]
     sample.reward = 0.0
     sample.status = Sample.Status.ABORTED
     sample.metadata = {**(sample.metadata or {}), "abort_reason": reason}
