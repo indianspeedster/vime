@@ -286,12 +286,12 @@ jobs:
 <% endfor %>
 
   e2e-test-utils:
-    name: Utils tests (pytest, in-image)
+    name: Utils tests (pytest)
     needs: pre-commit
     # Always-on regression gate (like e2e-test-plugin-contracts): runs on every
     # PR synchronize/label and on manual dispatch, no run-ci-* label required.
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: ${{ github.workspace }}
@@ -299,29 +299,26 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install pytest numpy packaging pyyaml omegaconf tqdm httpx pybase64 pylatexenc sympy aiohttp pillow
+
+      - name: Install
+        shell: bash
+        run: cd $GITHUB_WORKSPACE && pip install -e . --no-deps
+
       - name: Execute
         shell: bash
         run: |
-          # Run inside the CI image: it ships megatron + torch, which the
-          # tests/unit-style update-weight tests need at import time.
-          # CPU/mock only -> no --gpus / no GPU lock.
-          docker run --rm \
-            --network host \
-            --ipc=host \
-            --shm-size=16g \
-            -e http_proxy \
-            -e https_proxy \
-            -e HTTP_PROXY \
-            -e HTTPS_PROXY \
-            -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
-            -w "$GITHUB_WORKSPACE" \
-            inferactinc/public:vime-latest \
-            bash -lc '
-              set -euo pipefail
-              pip install -e . --no-deps --break-system-packages
-              pip install -q pytest --break-system-packages
-              python -m pytest tests/utils
-            '
+          python -m pytest tests/utils
 
   e2e-test-changed-detect:
     needs: pre-commit
