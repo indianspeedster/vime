@@ -1,0 +1,24 @@
+# Keep the docker build context (and the COPY . /root/vime layer) lean.
+.git
+.github
+
+# Local debug scratch (repro scripts, mem traces, sampled logs, plots)
+_*.py
+_*.sh
+_*.txt
+rl_*.log
+*.log
+*.png
+wandb/
+
+# Python / build cruft
+**/__pycache__/
+**/*.pyc
+.pytest_cache/
+*.egg-info/
+.venv/
+venv/
+
+# Model / checkpoint dirs (in case anything lands under the repo)
+*_torch_dist/
+*_vime/

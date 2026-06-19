@@ -335,6 +335,8 @@ def build_vllm_subprocess_env(server_args: dict[str, Any]) -> dict[str, str]:
     env.pop("PYTORCH_CUDA_ALLOC_CONF", None)
     env.setdefault("NCCL_CUMEM_ENABLE", "0")
     env["CUDA_VISIBLE_DEVICES"] = server_args["visible_devices"]
+    # ROCm: keep HIP visibility in sync with CUDA (no-op on CUDA).
+    env["HIP_VISIBLE_DEVICES"] = server_args["visible_devices"]
     env.setdefault("VLLM_SERVER_DEV_MODE", "1")
     if getattr(args, "vllm_enable_deterministic_inference", False):
         env["VLLM_BATCH_INVARIANT"] = "1"
