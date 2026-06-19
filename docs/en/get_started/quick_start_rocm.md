@@ -60,7 +60,7 @@ Run training using the ROCm-specific script. `VISIBLE_GPUS` specifies which GPUs
 NUM_ROLLOUT=100 VISIBLE_GPUS=6,7 bash scripts/run-qwen3-8B-rocm.sh
 ```
 
-Final note: After finishing the run, if a rerunning with a different `NUM_ROLLOUT`, make sure to clear the save directory to avoid mismatch error.
+Final note: After finishing the run, if rerunning with a different `NUM_ROLLOUT`, make sure to clear the save directory to avoid mismatch error.
 ```bash
 rm -rf /root/Qwen3-8B_vime/
 ```
