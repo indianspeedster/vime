@@ -10,7 +10,7 @@ Execute the following commands to pull the latest ROCm image and start a persist
 
 ```shell
 # Pull the ROCm image
-docker pull rocm/pytorch-private:vime-rocm702-v2
+docker pull vllm/vime-rocm
 
 # Start the container
 docker run -d --name vime --ulimit nofile=1048576:1048576 \
