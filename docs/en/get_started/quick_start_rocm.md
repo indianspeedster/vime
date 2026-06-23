@@ -16,7 +16,7 @@ docker pull vllm/vime-rocm
 docker run -d --name vime --ulimit nofile=1048576:1048576 \
   --ipc=host --network=host --device=/dev/kfd --device=/dev/dri \
   --security-opt seccomp=unconfined --group-add video --privileged \
-  -e WANDB_API_KEY=$wandb_key rocm/pytorch-private:vime-rocm702-v2
+  -e WANDB_API_KEY=$wandb_key vllm/vime-rocm
 # wandb key is optional if you want to track with WandB
 
 # Enter the container
@@ -57,10 +57,26 @@ HIP_VISIBLE_DEVICES=0 PYTHONPATH=/root/vime:/root/Megatron-LM \
 Run training using the ROCm-specific script. `VISIBLE_GPUS` specifies which GPUs to use, and `NUM_ROLLOUT` controls the total number of sampling→training rounds. The script automatically unsets NVTE environment variables that are not needed on ROCm.
 
 ```bash
-NUM_ROLLOUT=100 VISIBLE_GPUS=6,7 bash scripts/run-qwen3-8B-rocm.sh
+NUM_ROLLOUT=100 VISIBLE_GPUS=0,1 bash scripts/run-qwen3-8B-rocm.sh
 ```
 
-Final note: After finishing the run, if rerunning with a different `NUM_ROLLOUT`, make sure to clear the save directory to avoid mismatch error.
+### Configuration Notes
+
+- **VISIBLE_GPUS**
+    - Two free GPU indices.
+    - Script masks execution to these GPUs, avoids clashes.
+    - Uses:
+        - TP = 2
+        - Single vLLM engine
+        - Colocate mode
+        - DP = 1
+- **NUM_ROLLOUT**
+    - Number of training steps.
+    - Default is **3** for a smoke test.
+- Each run requires approximately **230 GB** across the two selected GPUs.
+- Launch only on GPUs with sufficient free memory.
+
+> **Final note**: After finishing the run, if rerunning with a different `NUM_ROLLOUT`, make sure to clear the save directory to avoid mismatch error.
 ```bash
 rm -rf /root/Qwen3-8B_vime/
 ```
