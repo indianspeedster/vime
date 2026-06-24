@@ -11,7 +11,7 @@ Since vime may contain temporary patches for vllm/megatron, to avoid potential e
 
 **vime** supports multiple NVIDIA GPU hardware platforms:
 
-- **B200 Series**: Fully supported with identical setup steps as H-series GPUs
+- **GB200 / GB300 / B200 / 300 Series**: Fully supported with identical setup steps as H-series GPUs
 - **H-Series (H100/H200)**: Official support with comprehensive CI testing and stable performance
 
 **Important Notes**:
@@ -20,20 +20,18 @@ Since vime may contain temporary patches for vllm/megatron, to avoid potential e
 - B-series basic functionality is stable and suitable for development/testing, but currently lacks CI protection
 - Both hardware platforms use identical installation and startup procedures
 
-- For scenarios where Docker is not convenient, please refer to [build_conda.sh](https://github.com/vllm-project/vime/blob/main/build_conda.sh).
-
 ### Pull and Start Docker Container
 
 Please execute the following commands to pull the latest image and start an interactive container:
 
 ```shell
 # Pull the latest image
-docker pull inferactinc/public:vime-latest
+docker pull vllm/vime:latest
 
 # Start the container
 docker run --rm --gpus all --ipc=host --shm-size=16g \
   --ulimit memlock=-1 --ulimit stack=67108864 \
-  -it inferactinc/public:vime-latest /bin/bash
+  -it vllm/vime:latest /bin/bash
 ```
 
 ### Install vime
@@ -53,7 +51,7 @@ You can download required models and datasets from platforms like Hugging Face, 
 
 ```bash
 # Download model weights (Qwen3-4B)
-hf download zai-org/Qwen3-4B --local-dir /root/Qwen3-4B
+hf download Qwen/Qwen3-4B --local-dir /root/Qwen3-4B
 
 # Download training dataset (dapo-math-17k)
 hf download --repo-type dataset zhuzilin/dapo-math-17k \
@@ -520,7 +518,7 @@ CUSTOM_ARGS=(
 
 ## Multi-Node Training for Large-Scale MOE Models
 
-To start a multi-node task, you need to first start a Ray cluster. On node 0, run:
+If you use Ray for multi-node training, one option is to start the cluster as follows:
 
 ```bash
 # Node0 (HEAD)

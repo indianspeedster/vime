@@ -10,7 +10,7 @@
 
 **vime** 支持多种 NVIDIA GPU 硬件平台：
 
-- **B200 系列**：完全支持，运行步骤与 H 系列完全相同
+- **GB200 / GB300 / B200 / 300 系列**：完全支持，运行步骤与 H 系列完全相同
 - **H 系列 (H100/H200)**：官方支持，具有完整的 CI 测试保护，运行稳定可靠
 
 **重要说明**：
@@ -19,20 +19,18 @@
 - B 卡基本功能稳定，可作为开发和测试参考，但暂无 CI 保护
 - 两种硬件平台使用完全相同的安装和启动流程
 
-- 对于不方便使用 docker 的场景，请参考 [build_conda.sh](https://github.com/vllm-project/vime/blob/main/build_conda.sh)。
-
 ### 拉取并启动 Docker 容器
 
 请执行以下命令，拉取最新镜像并启动一个交互式容器：
 
 ```shell
 # 拉取最新镜像
-docker pull inferactinc/public:vime-latest
+docker pull vllm/vime:latest
 
 # 启动容器
 docker run --rm --gpus all --ipc=host --shm-size=16g \
   --ulimit memlock=-1 --ulimit stack=67108864 \
-  -it inferactinc/public:vime-latest /bin/bash
+  -it vllm/vime:latest /bin/bash
 ```
 
 ### 安装 vime
@@ -52,7 +50,7 @@ pip install -e . --no-deps
 
 ```bash
 # 下载模型权重 (Qwen3-4B)
-hf download zai-org/Qwen3-4B --local-dir /root/Qwen3-4B
+hf download Qwen/Qwen3-4B --local-dir /root/Qwen3-4B
 
 # 下载训练数据集 (dapo-math-17k)
 hf download --repo-type dataset zhuzilin/dapo-math-17k \
@@ -525,7 +523,7 @@ CUSTOM_ARGS=(
 
 ## 大规模 MOE 模型的多机训练
 
-为了启动多机任务，首先需要启动一个 ray 集群，即在 node 0 运行：
+如果使用 Ray 进行多机训练，可以参考下面的方式启动集群：
 
 ```bash
 # Node0（HEAD）
@@ -536,7 +534,7 @@ ray start --head --node-ip-address ${MASTER_ADDR} \
 ray start --address=${MASTER_ADDR}:6379 --num-gpus 8
 ```
 
-在 ray 集群启动后，可以在 node 0 提交任务，例如：
+在 Ray 集群启动后，可以在 node 0 提交任务，例如：
 
 ```bash
 ray job submit --address="http://127.0.0.1:8265" \
