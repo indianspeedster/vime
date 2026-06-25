@@ -57,7 +57,7 @@ HIP_VISIBLE_DEVICES=0 PYTHONPATH=/root/vime:/root/Megatron-LM \
 Run training using the ROCm-specific script. `VISIBLE_GPUS` specifies which GPUs to use, and `NUM_ROLLOUT` controls the total number of sampling→training rounds. The script automatically unsets NVTE environment variables that are not needed on ROCm.
 
 ```bash
-NUM_ROLLOUT=100 VISIBLE_GPUS=0,1 bash scripts/run-qwen3-8B-rocm.sh
+NUM_ROLLOUT=100 VISIBLE_GPUS=0,1 bash scripts/run-qwen3-8B-amd.sh
 ```
 
 ### Configuration Notes

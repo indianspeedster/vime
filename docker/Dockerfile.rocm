@@ -193,29 +193,33 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
 # ======================================== vime ===============================
 FROM aiter AS install_vime
 
-ARG MEGATRON_REPO="https://github.com/radixark/Megatron-LM.git"
-ARG MEGATRON_BRANCH="miles-main"
-ARG MEGATRON_PATCH_URL="https://raw.githubusercontent.com/radixark/miles/main/docker/amd_patch/latest/megatron.patch"
+# Use vime's mainline Megatron (NVIDIA/Megatron-LM at ${MEGATRON_COMMIT}) plus the
+# shared docker/patch/${PATCH_VERSION}/megatron.patch, identical to docker/Dockerfile.
+# This keeps the ROCm build in lockstep with the CUDA build and removes the need for
+# the radixark/miles fork (and its miles_compat shim). The ROCm fork-after-HIP-init
+# checkpoint segfault is handled at runtime by vime.utils.rocm_checkpoint_writer.
+ARG PATCH_VERSION=latest
+ARG MEGATRON_COMMIT=1dcf0dafa884ad52ffb243625717a3471643e087
 RUN --mount=type=cache,target=/root/.cache/pip \
-    git clone --recursive -b ${MEGATRON_BRANCH} ${MEGATRON_REPO} /root/Megatron-LM && \
-    cd /root/Megatron-LM && \
-    curl -sSL "${MEGATRON_PATCH_URL}" -o megatron.patch && \
-    git apply megatron.patch && \
+    git clone https://github.com/NVIDIA/Megatron-LM.git --recursive /root/Megatron-LM && \
+    cd /root/Megatron-LM && git checkout ${MEGATRON_COMMIT}
+
+COPY docker/patch/${PATCH_VERSION}/megatron.patch /root/Megatron-LM/
+RUN cd /root/Megatron-LM && \
+    git update-index --refresh && \
+    git apply megatron.patch --3way && \
+    if grep -R -n '^<<<<<<< ' .; then \
+      echo "Patch failed to apply cleanly. Please resolve conflicts." && \
+      exit 1; \
+    fi && \
     rm megatron.patch && \
     pip install -e .
-
-COPY docker/patch/megatron_nofork_patch.py /tmp/megatron_nofork_patch.py
-RUN python3 /tmp/megatron_nofork_patch.py
-
-# miles-main Megatron imports miles.utils.replay_base in its MoE path; ship a
-# no-op replay shim (replay disabled) so MoE models build without the miles pkg.
-COPY docker/patch/miles_compat/miles /root/Megatron-LM/miles
 
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --ignore-installed PyJWT && \
     pip install flash-linear-attention==0.4.2 && \
     pip install git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f89a4de258c0702932a1c --no-deps && \
-    pip install git+https://github.com/yushengsu-thu/Megatron-Bridge.git@merged-megatron-0.16.0rc0-miles --no-deps --no-build-isolation && \
+    pip install git+https://github.com/radixark/Megatron-Bridge.git@bridge --no-deps --no-build-isolation && \
     pip install megatron-energon --no-deps && \
     pip install multi-storage-client --no-deps
 
