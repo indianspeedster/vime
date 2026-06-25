@@ -205,7 +205,7 @@ launch_train_for_profiling() {
 
   # Clean up old Ray / vLLM processes (comment out if not needed)
   ray stop --force || true
-  pkill -9 -f '[v]llm serve|VLL[M]::' || true
+  pkill -9 vllm || true
   sleep 2
 
   ray start --head --node-ip-address 127.0.0.1 --num-gpus 2 --disable-usage-stats

@@ -12,10 +12,27 @@ pkill -9 python
 
 set -ex
 
+if [ -z "${BASE_FOLDER:-}" ]; then
+  echo "BASE_FOLDER is not set. Please set it to the base directory of your checkpoints."
+  exit 1
+fi
+
+MASTER_ADDR=${MASTER_ADDR:-}
+if [ -z "${MASTER_ADDR}" ]; then
+  echo "MASTER_ADDR is not set. Please set it to the master node address."
+  exit 1
+fi
+
 # will prevent ray from buffering stdout/stderr
 export PYTHONUNBUFFERED=1
 
+# unset proxy to avoid distributed startup issues
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
+
+ACTOR_NUM_NODES=${ACTOR_NUM_NODES:-4}
+ACTOR_NUM_GPUS_PER_NODE=${ACTOR_NUM_GPUS_PER_NODE:-8}
+CP_SIZE=${CP_SIZE:-4}
+SOCKET_IFNAME=${SOCKET_IFNAME:-eth0}
 
 NVLINK_COUNT=$(nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l)
 if [ "$NVLINK_COUNT" -gt 0 ]; then
@@ -26,48 +43,47 @@ fi
 echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-source "${SCRIPT_DIR}/models/glm4.5-355B-A32B.sh"
+source "${SCRIPT_DIR}/models/qwen3-next-80B-A3B.sh"
 
 CKPT_ARGS=(
-   --hf-checkpoint $BASE_DIR/GLM-4.7-355B-A32B
-   --ref-load $BASE_DIR/GLM-4.7-355B-A32B_torch_dist/
+   --hf-checkpoint "${BASE_FOLDER}/Qwen3-Next-80B-A3B-Thinking"
+   --ref-load "${BASE_FOLDER}/Qwen3-Next-80B-A3B-Thinking_torch_dist"
+   --load "${BASE_FOLDER}/Qwen3-Next-80B-A3B-Thinking_vime/"
+   --save "${BASE_FOLDER}/Qwen3-Next-80B-A3B-Thinking_vime/"
+   --save-interval 20
 )
 
 ROLLOUT_ARGS=(
-   --prompt-data $BASE_DIR/dapo-math-17k/dapo-math-17k.jsonl
+   --prompt-data "${BASE_FOLDER}/dapo-math-17k/dapo-math-17k.jsonl"
    --input-key prompt
    --label-key label
    --apply-chat-template
    --rollout-shuffle
    --rm-type deepscaler
    --num-rollout 3000
-   --rollout-batch-size 128
+   --rollout-batch-size 8
    --n-samples-per-prompt 8
    --rollout-max-response-len 32768
    --rollout-temperature 1
-
-   --over-sampling-batch-size 256
-   --dynamic-sampling-filter-path vime.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std
-
-   --num-steps-per-rollout 4
+   --global-batch-size 64
    --balance-data
-   --rollout-stop-token-ids 151329 151336 151338
 )
 
 EVAL_ARGS=(
    --eval-interval 20
-   --eval-prompt-data aime $BASE_DIR/rl_data/aime-2024.jsonl
+   --eval-prompt-data aime "${BASE_FOLDER}/aime-2024/aime-2024.jsonl"
    --n-samples-per-eval-prompt 8
    --eval-max-response-len 32768
    --eval-top-p 1
 )
 
 PERF_ARGS=(
-   --tensor-model-parallel-size 8
+   --tensor-model-parallel-size 2
    --sequence-parallel
    --pipeline-model-parallel-size 4
-   --context-parallel-size 2
-   --expert-model-parallel-size 16
+   --decoder-last-pipeline-num-layers 9
+   --context-parallel-size "${CP_SIZE}"
+   --expert-model-parallel-size 8
    --expert-tensor-parallel-size 1
 
    --recompute-granularity full
@@ -75,20 +91,16 @@ PERF_ARGS=(
    --recompute-num-layers 1
 
    --use-dynamic-batch-size
-   --max-tokens-per-gpu 16384
+   --max-tokens-per-gpu 8192
 )
 
 GRPO_ARGS=(
    --advantage-estimator gspo
-   #--use-kl-loss
    --kl-loss-coef 0.00
    --kl-loss-type low_var_kl
    --kl-coef 0.00
    --entropy-coef 0.00
-   --eps-clip 1e-4
-   --eps-clip-high 2e-4
-
-   --use-tis
+   --eps-clip 4e-4
 )
 
 OPTIMIZER_ARGS=(
@@ -107,44 +119,32 @@ OPTIMIZER_ARGS=(
 WANDB_ARGS=(
    # --use-wandb
    # --wandb-project vime-dev
-   # --wandb-group glm4.7-355B
+   # --wandb-group qwen3-next-80B-A3B-32k
+   # --wandb-key ${WANDB_KEY}
 )
 
 VLLM_ARGS=(
-   --rollout-num-gpus-per-engine 32
-   --vllm-gpu-memory-utilization 0.7
-   --vllm-data-parallel-size 4
+   --rollout-num-gpus-per-engine 8
+   --vllm-gpu-memory-utilization 0.8
+   --vllm-enable-expert-parallel
+   --vllm-cudagraph-capture-sizes 1 2 4 8 $(seq 16 8 128)
 
    # mtp
-   --vllm-enable-expert-parallel
-   --vllm-speculative-config '{"method":"mtp","num_speculative_tokens":3}'
+
+   --vllm-max-num-seqs 256
+   --vllm-speculative-config '{"method":"eagle","num_speculative_tokens":4}'
 )
 
 MISC_ARGS=(
-   # default dropout in megatron is 0.1
    --attention-dropout 0.0
    --hidden-dropout 0.0
-   # should be good for model performance
    --accumulate-allreduce-grads-in-fp32
    --attention-softmax-in-fp32
-   # need to comment this when using model with MLA
    --attention-backend flash
-
    --moe-token-dispatcher-type flex
    --moe-enable-deepep
 )
 
-ACTOR_NUM_NODES=${ACTOR_NUM_NODES:-8}
-ACTOR_NUM_GPUS_PER_NODE=${ACTOR_NUM_GPUS_PER_NODE:-8}
-SOCKET_IFNAME=${SOCKET_IFNAME:-eth0}
-
-MASTER_ADDR=${MASTER_ADDR:-}
-if [ -z "${MASTER_ADDR}" ]; then
-  echo "MASTER_ADDR is not set. Please set it to the master node address."
-  exit 1
-fi
-
-# launch the master node of ray
 export no_proxy="127.0.0.1,${MASTER_ADDR}"
 ray start --head --node-ip-address "${MASTER_ADDR}" --num-gpus "${ACTOR_NUM_GPUS_PER_NODE}" --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
 
@@ -182,13 +182,13 @@ ray job submit --address="http://127.0.0.1:8265" \
    --actor-num-nodes "${ACTOR_NUM_NODES}" \
    --actor-num-gpus-per-node "${ACTOR_NUM_GPUS_PER_NODE}" \
    --colocate \
-   ${MODEL_ARGS[@]} \
-   ${CKPT_ARGS[@]} \
-   ${ROLLOUT_ARGS[@]} \
-   ${OPTIMIZER_ARGS[@]} \
-   ${GRPO_ARGS[@]} \
-   ${WANDB_ARGS[@]} \
-   ${PERF_ARGS[@]} \
-   ${EVAL_ARGS[@]} \
-   ${VLLM_ARGS[@]} \
-   ${MISC_ARGS[@]}
+   "${MODEL_ARGS[@]}" \
+   "${CKPT_ARGS[@]}" \
+   "${ROLLOUT_ARGS[@]}" \
+   "${OPTIMIZER_ARGS[@]}" \
+   "${GRPO_ARGS[@]}" \
+   "${WANDB_ARGS[@]}" \
+   "${PERF_ARGS[@]}" \
+   "${EVAL_ARGS[@]}" \
+   "${VLLM_ARGS[@]}" \
+   "${MISC_ARGS[@]}"

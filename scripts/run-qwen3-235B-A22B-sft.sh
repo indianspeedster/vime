@@ -12,6 +12,17 @@ pkill -9 python
 
 set -ex
 
+# if base folder not set raise error
+if [ -z "${BASE_FOLDER}" ]; then
+  echo "BASE_FOLDER is not set. Please set it to the base directory of your checkpoints."
+  exit 1
+fi
+
+if [ -z "${MASTER_ADDR}" ]; then
+  echo "MASTER_ADDR is not set. Please set it to the master node address."
+  exit 1
+fi
+
 # will prevent ray from buffering stdout/stderr
 export PYTHONUNBUFFERED=1
 
@@ -24,42 +35,30 @@ fi
 echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-source "/root/vime/scripts/models/qwen3-30B-A3B.sh"
+source "${SCRIPT_DIR}/models/qwen3-235B-A22B.sh"
 
 CKPT_ARGS=(
-   --hf-checkpoint /root/Qwen3-30B-A3B
-   --ref-load /root/Qwen3-30B-A3B_torch_dist
-   --load /root/Qwen3-4B_vime/
-   --save /root/Qwen3-4B_vime/
-   --save-interval 20
+   --hf-checkpoint ${BASE_FOLDER}/Qwen3-235B-A22B
+   --ref-load ${BASE_FOLDER}/Qwen3-235B-A22B_torch_dist
+   --load ${BASE_FOLDER}/Qwen3-235B-A22B_vime/
+   --save ${BASE_FOLDER}/Qwen3-235B-A22B_vime/
+   --save-interval 1000
 )
 
-ROLLOUT_ARGS=(
-   --custom-generate-function-path examples.multi_agent.rollout_with_multi_agents.generate_with_multi_agents
-   --prompt-data /root/dapo-math-17k/dapo-math-17k.jsonl
-   --input-key prompt
-   --label-key label
-   --apply-chat-template
+SFT_ARGS=(
+   --rollout-function-path vime.rollout.sft_rollout.generate_rollout
+   --prompt-data ${BASE_FOLDER}/openhermes2_5.parquet
+   --input-key messages
+   # --apply-chat-template
    --rollout-shuffle
-   --rm-type deepscaler
-   --num-rollout 3000
-   --rollout-batch-size 32
-   --n-samples-per-prompt 8
-   --rollout-max-context-len 16384
-   --rollout-max-response-len 8192
-   --rollout-temperature 1
+   --num-epoch 3
+   --rollout-batch-size 128
+   --global-batch-size 128
 
-   --global-batch-size 256
-   --balance-data
-)
-
-# multi-agent do not support eval for now
-EVAL_ARGS=(
-#    --eval-interval 20
-#    --eval-prompt-data aime /root/aime-2024/aime-2024.jsonl
-   --n-samples-per-eval-prompt 16
-   --eval-max-response-len 16384
-   --eval-top-p 1
+   --loss-type sft_loss
+   --calculate-per-token-loss
+   --disable-compute-advantages-and-returns
+   --debug-train-only
 )
 
 PERF_ARGS=(
@@ -67,7 +66,7 @@ PERF_ARGS=(
    --sequence-parallel
    --pipeline-model-parallel-size 1
    --context-parallel-size 1
-   --expert-model-parallel-size 8
+   --expert-model-parallel-size 32
    --expert-tensor-parallel-size 1
 
    --recompute-granularity full
@@ -76,24 +75,15 @@ PERF_ARGS=(
 
    # --micro-batch-size 1
    --use-dynamic-batch-size
-   --max-tokens-per-gpu 20480
-)
-
-GRPO_ARGS=(
-   --advantage-estimator grpo
-   --use-kl-loss
-   --kl-loss-coef 0.00
-   --kl-loss-type low_var_kl
-   --entropy-coef 0.00
-   --eps-clip 0.2
-   --eps-clip-high 0.28
-   --use-rollout-logprobs
+   --max-tokens-per-gpu 9216
 )
 
 OPTIMIZER_ARGS=(
    --optimizer adam
-   --lr 1e-6
-   --lr-decay-style constant
+   --lr 1e-5
+   --lr-decay-style cosine
+   --min-lr 1e-6
+   --lr-warmup-fraction 0.1
    --weight-decay 0.1
    --adam-beta1 0.9
    --adam-beta2 0.98
@@ -104,16 +94,9 @@ OPTIMIZER_ARGS=(
 )
 
 WANDB_ARGS=(
-   #--use-wandb
+   # --use-wandb
    # --wandb-project vime-dev
-   # --wandb-group qwen3-30B-A3B-test
-   # --wandb-key ${WANDB_KEY}
-)
-
-VLLM_ARGS=(
-   --rollout-num-gpus-per-engine 8
-   --vllm-gpu-memory-utilization 0.7
-   --vllm-cudagraph-capture-sizes 1 2 4 8 $(seq 16 8 256)
+   # --wandb-group qwen3-235B-sft
 )
 
 MISC_ARGS=(
@@ -128,31 +111,41 @@ MISC_ARGS=(
 )
 
 # launch the master node of ray in container
-export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
+export no_proxy="127.0.0.1,${MASTER_ADDR}"
 ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
+for WORKER_IP in $(awk '{print $1}' /root/mpi_rack_hostfile); do
+  if [[ "$WORKER_IP" == "$MLP_WORKER_0_HOST" ]]; then
+    continue
+  fi
+  echo "Starting Ray worker on ${WORKER_IP}"
+  ssh root@"${WORKER_IP}" \
+    "pkill -9 vllm ; ray stop --force ; pkill -9 python ; ray start --address=${MASTER_ADDR}:6379 --num-gpus 8 --node-ip-address ${WORKER_IP} --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265" &
+done
+wait
+
 
 # Build the runtime environment JSON with proper variable substitution
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
     \"PYTHONPATH\": \"/root/Megatron-LM/\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
-    \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\"
+    \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\",
+    \"no_proxy\": \"${no_proxy}\",
+    \"MASTER_ADDR\": \"${MASTER_ADDR}\",
+    \"PYTORCH_CUDA_ALLOC_CONF\": \"expandable_segments:True\"
   }
 }"
 
 ray job submit --address="http://127.0.0.1:8265" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
-   -- python3 train.py \
-   --actor-num-nodes 1 \
+   -- python3 train_async.py \
+   --actor-num-nodes 4 \
    --actor-num-gpus-per-node 8 \
-   --colocate \
    ${MODEL_ARGS[@]} \
    ${CKPT_ARGS[@]} \
-   ${ROLLOUT_ARGS[@]} \
+   ${SFT_ARGS[@]} \
    ${OPTIMIZER_ARGS[@]} \
-   ${GRPO_ARGS[@]} \
    ${WANDB_ARGS[@]} \
    ${PERF_ARGS[@]} \
    ${EVAL_ARGS[@]} \
-   ${VLLM_ARGS[@]} \
    ${MISC_ARGS[@]}

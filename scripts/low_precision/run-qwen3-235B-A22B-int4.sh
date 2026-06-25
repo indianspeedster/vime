@@ -15,7 +15,7 @@ set -ex
 # will prevent ray from buffering stdout/stderr
 export PYTHONUNBUFFERED=1
 
-NVLINK_COUNT=$(nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l)
+NVLINK_COUNT=$(nvidia-smi | grep -o "NVLink" | wc -l)
 if [ "$NVLINK_COUNT" -gt 0 ]; then
     HAS_NVLINK=1
 else
@@ -24,51 +24,51 @@ fi
 echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-source "/root/vime/scripts/models/qwen3-30B-A3B.sh"
+source "${SCRIPT_DIR}/../models/qwen3-235B-A22B.sh"
 
 CKPT_ARGS=(
-   --hf-checkpoint /root/Qwen3-30B-A3B
-   --ref-load /root/Qwen3-30B-A3B_torch_dist
-   --load /root/Qwen3-4B_vime/
-   --save /root/Qwen3-4B_vime/
+   --hf-checkpoint /root/Qwen3-235B-A22B-INT4/
+   --ref-load /root/Qwen3-235B-A22B_torch_dist/
+   --load /root/Qwen3-235B-A22B_vime/ 
+   --save /root/Qwen3-235B-A22B_vime/ 
    --save-interval 20
 )
 
 ROLLOUT_ARGS=(
-   --custom-generate-function-path examples.multi_agent.rollout_with_multi_agents.generate_with_multi_agents
    --prompt-data /root/dapo-math-17k/dapo-math-17k.jsonl
    --input-key prompt
    --label-key label
    --apply-chat-template
    --rollout-shuffle
+
    --rm-type deepscaler
-   --num-rollout 3000
+
+   --num-rollout 300
    --rollout-batch-size 32
    --n-samples-per-prompt 8
-   --rollout-max-context-len 16384
    --rollout-max-response-len 8192
-   --rollout-temperature 1
+   --rollout-temperature 0.8
 
    --global-batch-size 256
    --balance-data
 )
 
-# multi-agent do not support eval for now
 EVAL_ARGS=(
-#    --eval-interval 20
-#    --eval-prompt-data aime /root/aime-2024/aime-2024.jsonl
+   --eval-interval 10
+   --eval-prompt-data aime /root/aime-2024/aime-2024.jsonl
    --n-samples-per-eval-prompt 16
    --eval-max-response-len 16384
-   --eval-top-p 1
+   --eval-top-p 0.7
 )
 
 PERF_ARGS=(
    --tensor-model-parallel-size 4
    --sequence-parallel
-   --pipeline-model-parallel-size 1
-   --context-parallel-size 1
-   --expert-model-parallel-size 8
+   --pipeline-model-parallel-size 4
+   --context-parallel-size 2
+   --expert-model-parallel-size 16
    --expert-tensor-parallel-size 1
+   --decoder-last-pipeline-num-layers 22
 
    --recompute-granularity full
    --recompute-method uniform
@@ -76,7 +76,7 @@ PERF_ARGS=(
 
    # --micro-batch-size 1
    --use-dynamic-batch-size
-   --max-tokens-per-gpu 20480
+   --max-tokens-per-gpu 16384
 )
 
 GRPO_ARGS=(
@@ -84,10 +84,11 @@ GRPO_ARGS=(
    --use-kl-loss
    --kl-loss-coef 0.00
    --kl-loss-type low_var_kl
+   # --kl-coef 0.00
    --entropy-coef 0.00
    --eps-clip 0.2
    --eps-clip-high 0.28
-   --use-rollout-logprobs
+   --use-tis
 )
 
 OPTIMIZER_ARGS=(
@@ -104,17 +105,21 @@ OPTIMIZER_ARGS=(
 )
 
 WANDB_ARGS=(
-   #--use-wandb
+   # --use-wandb
    # --wandb-project vime-dev
-   # --wandb-group qwen3-30B-A3B-test
+   # --wandb-group qwen3-235B-A22B-test
    # --wandb-key ${WANDB_KEY}
 )
+
 
 VLLM_ARGS=(
    --rollout-num-gpus-per-engine 8
    --vllm-gpu-memory-utilization 0.7
+  #  --vllm-data-parallel-size 4
+   --vllm-enable-expert-parallel
    --vllm-cudagraph-capture-sizes 1 2 4 8 $(seq 16 8 256)
 )
+
 
 MISC_ARGS=(
    # default dropout in megatron is 0.1
@@ -125,25 +130,31 @@ MISC_ARGS=(
    --attention-softmax-in-fp32
    # need to comment this when using model with MLA
    --attention-backend flash
-)
+   --no-check-for-nan-in-loss-and-grad
 
-# launch the master node of ray in container
-export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
+   # use deepep for megatron
+   # --moe-enable-deepep
+   # --moe-token-dispatcher-type flex
+)
 
 # Build the runtime environment JSON with proper variable substitution
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
     \"PYTHONPATH\": \"/root/Megatron-LM/\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
-    \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\"
+    \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\",
+    \"NCCL_TIMEOUT_MS\":\"360000000\",
+    \"no_proxy\": \"${no_proxy}\",
+    \"MASTER_ADDR\": \"${MASTER_ADDR}\",
+    \"OPEN_TRAINING_INT4_FAKE_QAT_FLAG\": \"1\",
+    \"OPEN_TRAINING_INT4_GROUP_SIZE\": \"128\"
   }
 }"
 
 ray job submit --address="http://127.0.0.1:8265" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
    -- python3 train.py \
-   --actor-num-nodes 1 \
+   --actor-num-nodes 8 \
    --actor-num-gpus-per-node 8 \
    --colocate \
    ${MODEL_ARGS[@]} \

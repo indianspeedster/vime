@@ -1,7 +1,4 @@
 #!/bin/bash
-# ============================================================
-# Script 2/3: MiniMax-M2.5 (229B MoE) RL Training
-# ============================================================
 
 # for rerun the task
 pkill -9 vllm
@@ -15,6 +12,7 @@ pkill -9 python
 
 set -ex
 
+# will prevent ray from buffering stdout/stderr
 export PYTHONUNBUFFERED=1
 
 NVLINK_COUNT=$(nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l)
@@ -26,33 +24,33 @@ fi
 echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-source "${SCRIPT_DIR}/models/minimax-m2.sh"
+source "${SCRIPT_DIR}/models/kimi-k2-thinking.sh"
 
-# ---- Paths (modify according to your environment) ----
-BASE_DIR=${BASE_DIR:-"/root"}
-
-CKPT_ARGS=(
-   --hf-checkpoint ${BASE_DIR}/MiniMax-M2.5
-   --ref-load ${BASE_DIR}/MiniMax-M2.5_torch_dist
-   --load ${BASE_DIR}/MiniMax-M2.5_vime/
-   --save ${BASE_DIR}/MiniMax-M2.5_vime/
+CKPT_ARGS=(   
+   # --hf-checkpoint $BASE_DIR/Kimi-K2-Thinking-bf16/
+   --hf-checkpoint $BASE_DIR/Kimi-K2-Thinking-fp8/
+   --ref-load $BASE_DIR/Kimi-K2-Thinking_torch_dist/
+   --load $BASE_DIR/Kimi-K2-Thinking_vime/
+   --save $BASE_DIR/Kimi-K2-Thinking_vime/
    --save-interval 20
-   --megatron-to-hf-mode raw
-   --model-name minimax_m2
 )
 
 ROLLOUT_ARGS=(
-   --prompt-data ${BASE_DIR}/dapo-math-17k/dapo-math-17k.jsonl
+   --prompt-data $BASE_DIR/dapo-math-17k/dapo-math-17k.jsonl
    --input-key prompt
    --label-key label
    --apply-chat-template
    --rollout-shuffle
-   --rm-type deepscaler
-   --num-rollout 3000
+
+   --rm-type math
+
+   --num-rollout 100
    --rollout-batch-size 128
    --n-samples-per-prompt 8
-   --rollout-max-response-len 32768
+   --rollout-max-response-len 16384
    --rollout-temperature 1
+
+   # --global-batch-size 1024
 
    --over-sampling-batch-size 256
    --dynamic-sampling-filter-path vime.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std
@@ -63,30 +61,27 @@ ROLLOUT_ARGS=(
 
 EVAL_ARGS=(
    --eval-interval 20
-   --eval-prompt-data aime ${BASE_DIR}/rl_data/aime-2024.jsonl
-   --n-samples-per-eval-prompt 8
-   --eval-max-response-len 32768
+   --eval-prompt-data aime $BASE_DIR/aime-2024.jsonl
+   --n-samples-per-eval-prompt 16
+   --eval-max-response-len 16384
    --eval-top-p 1
 )
 
-# ---- Parallelism Strategy ----
-# 229B MoE, 256 experts -> requires many GPUs
-# Typical config: TP=2, PP=2, EP=4, training side 16 GPUs (2 nodes x 8 GPUs)
-# Inference side: vLLM on separate GPUs, EP=16+
 PERF_ARGS=(
-   --tensor-model-parallel-size 2
+   --tensor-model-parallel-size 8
    --sequence-parallel
-   --pipeline-model-parallel-size 2
-   --context-parallel-size 1
-   --expert-model-parallel-size 4
+   --pipeline-model-parallel-size 8
+   --context-parallel-size 4
+   --expert-model-parallel-size 32
    --expert-tensor-parallel-size 1
+   --decoder-last-pipeline-num-layers 5
 
    --recompute-granularity full
    --recompute-method uniform
    --recompute-num-layers 1
 
    --use-dynamic-batch-size
-   --max-tokens-per-gpu 8192
+   --max-tokens-per-gpu 16384
 )
 
 GRPO_ARGS=(
@@ -94,14 +89,17 @@ GRPO_ARGS=(
    --use-kl-loss
    --kl-loss-coef 0.00
    --kl-loss-type low_var_kl
+   # --kl-coef 0.00
    --entropy-coef 0.00
    --eps-clip 0.2
    --eps-clip-high 0.28
+   --use-tis
 )
 
 OPTIMIZER_ARGS=(
    --optimizer adam
    --lr 1e-6
+
    --lr-decay-style constant
    --weight-decay 0.1
    --adam-beta1 0.9
@@ -115,56 +113,65 @@ OPTIMIZER_ARGS=(
 WANDB_ARGS=(
    # --use-wandb
    # --wandb-project vime-dev
-   # --wandb-group minimax-m2-rl
+   # --wandb-group kimi-k2-test
    # --wandb-key ${WANDB_KEY}
-)
-
-TB_ARGS=(
-   --use-tensorboard
 )
 
 VLLM_ARGS=(
    --rollout-num-gpus-per-engine 16
    --vllm-gpu-memory-utilization 0.7
+
+   # dp attention
+   --vllm-data-parallel-size 8
+
    --vllm-enable-expert-parallel
+
+   # enable deepep for vllm
+
+   # make every dp rank has 128 concurrency
+   --vllm-server-concurrency 1024
 )
+
 
 MISC_ARGS=(
+   # default dropout in megatron is 0.1
    --attention-dropout 0.0
    --hidden-dropout 0.0
+   # should be good for model performance
    --accumulate-allreduce-grads-in-fp32
    --attention-softmax-in-fp32
+   # need to comment this when using model with MLA
    --attention-backend flash
+
+   # use deepep for megatron
+   # --moe-enable-deepep
+   # --moe-token-dispatcher-type flex
 )
 
-# launch the master node of ray in container
-export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-export no_proxy="127.0.0.1,${MASTER_ADDR}"
-ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
-
+# Build the runtime environment JSON with proper variable substitution
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
-    \"no_proxy\": \"localhost,127.0.0.1,0.0.0.0,${MASTER_ADDR}\",
-    \"MASTER_ADDR\": \"${MASTER_ADDR}\",
     \"PYTHONPATH\": \"/root/Megatron-LM/\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
-    \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\"
+    \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\",
+    \"no_proxy\": \"${no_proxy}\",
+    \"MASTER_ADDR\": \"${MASTER_ADDR}\"
   }
 }"
 
 ray job submit --address="http://127.0.0.1:8265" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
    -- python3 train.py \
-   --actor-num-nodes 16 \
+   --actor-num-nodes 32 \
    --actor-num-gpus-per-node 8 \
    --colocate \
+   --update-weight-buffer-size $(( 4 * 512 * 1024 * 1024)) \
    ${MODEL_ARGS[@]} \
    ${CKPT_ARGS[@]} \
    ${ROLLOUT_ARGS[@]} \
    ${OPTIMIZER_ARGS[@]} \
    ${GRPO_ARGS[@]} \
    ${WANDB_ARGS[@]} \
-   ${TB_ARGS[@]} \
    ${PERF_ARGS[@]} \
    ${EVAL_ARGS[@]} \
    ${VLLM_ARGS[@]} \

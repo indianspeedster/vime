@@ -1,14 +1,15 @@
 #!/bin/bash
 
 # for rerun the task
-pkill -9 vllm
-sleep 3
-ray stop --force
-pkill -9 ray
-pkill -9 python
-sleep 3
-pkill -9 ray
-pkill -9 python
+# pkill -9 vllm
+# sleep 3
+# ray stop --force
+# pkill -9 ray
+# pkill -9 python
+# sleep 3
+# pkill -9 ray
+# pkill -9 python
+# pkill -9 redis
 
 set -ex
 
@@ -24,50 +25,50 @@ fi
 echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-source "/root/vime/scripts/models/qwen3-30B-A3B.sh"
+source "${SCRIPT_DIR}/../models/qwen3-30B-A3B.sh"
+
+# Base directory for checkpoints and related files (adjust if necessary)
+BASE_DIR="/root" 
 
 CKPT_ARGS=(
-   --hf-checkpoint /root/Qwen3-30B-A3B
-   --ref-load /root/Qwen3-30B-A3B_torch_dist
-   --load /root/Qwen3-4B_vime/
-   --save /root/Qwen3-4B_vime/
+   --hf-checkpoint "${BASE_DIR}/Qwen3-30B-A3B-FP8/"
+   --ref-load "${BASE_DIR}/Qwen3-30B-A3B_torch_dist/"
+   --load "${BASE_DIR}/Qwen3-30B-A3B_vime/"
+   --save "${BASE_DIR}/Qwen3-30B-A3B_vime/"
    --save-interval 20
 )
 
 ROLLOUT_ARGS=(
-   --custom-generate-function-path examples.multi_agent.rollout_with_multi_agents.generate_with_multi_agents
-   --prompt-data /root/dapo-math-17k/dapo-math-17k.jsonl
+   --prompt-data "${BASE_DIR}/dapo-math-17k.jsonl"
    --input-key prompt
    --label-key label
    --apply-chat-template
    --rollout-shuffle
-   --rm-type deepscaler
-   --num-rollout 3000
-   --rollout-batch-size 32
+   --rm-type math
+   --num-rollout 200
+   --rollout-batch-size 16
    --n-samples-per-prompt 8
-   --rollout-max-context-len 16384
    --rollout-max-response-len 8192
    --rollout-temperature 1
 
-   --global-batch-size 256
+   --global-batch-size 128
    --balance-data
 )
 
-# multi-agent do not support eval for now
 EVAL_ARGS=(
-#    --eval-interval 20
-#    --eval-prompt-data aime /root/aime-2024/aime-2024.jsonl
+   --eval-interval 20
+   --eval-prompt-data aime "${BASE_DIR}/aime-2024.jsonl"
    --n-samples-per-eval-prompt 16
    --eval-max-response-len 16384
    --eval-top-p 1
 )
 
 PERF_ARGS=(
-   --tensor-model-parallel-size 4
+   --tensor-model-parallel-size 1
    --sequence-parallel
-   --pipeline-model-parallel-size 1
+   --pipeline-model-parallel-size 4
    --context-parallel-size 1
-   --expert-model-parallel-size 8
+   --expert-model-parallel-size 4
    --expert-tensor-parallel-size 1
 
    --recompute-granularity full
@@ -77,6 +78,17 @@ PERF_ARGS=(
    # --micro-batch-size 1
    --use-dynamic-batch-size
    --max-tokens-per-gpu 20480
+
+   # use deepep for megatron
+   --moe-enable-deepep
+   --moe-token-dispatcher-type flex
+
+   # fp8
+   --transformer-impl transformer_engine
+   --bf16
+   --fp8-format e4m3
+   --fp8-recipe blockwise
+   # --fp8-param-gather
 )
 
 GRPO_ARGS=(
@@ -87,7 +99,7 @@ GRPO_ARGS=(
    --entropy-coef 0.00
    --eps-clip 0.2
    --eps-clip-high 0.28
-   --use-rollout-logprobs
+   --use-tis
 )
 
 OPTIMIZER_ARGS=(
@@ -112,8 +124,10 @@ WANDB_ARGS=(
 
 VLLM_ARGS=(
    --rollout-num-gpus-per-engine 8
-   --vllm-gpu-memory-utilization 0.7
+   --vllm-gpu-memory-utilization 0.6
    --vllm-cudagraph-capture-sizes 1 2 4 8 $(seq 16 8 256)
+   --vllm-enable-expert-parallel
+   # --use-rollout-routing-replay
 )
 
 MISC_ARGS=(
@@ -127,23 +141,30 @@ MISC_ARGS=(
    --attention-backend flash
 )
 
-# launch the master node of ray in container
-export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
+# Get Ray Head node info automatically
+ip=$(ps aux | grep dashboard | grep -oP '(?<=--node-ip-address=)[0-9\.]+' | head -1)
+port=$(ps aux | grep dashboard | grep -oP '(?<=dashboard-port=)\d+' | head -1)
+export HEAD_NODE_ADDRESS="$ip"
+export DASHBOARD_PORT="$port"
+echo "Detected Ray Head IP: $HEAD_NODE_ADDRESS, Port: $DASHBOARD_PORT"
 
-# Build the runtime environment JSON with proper variable substitution
+export RAY_ADDRESS="http://${HEAD_NODE_ADDRESS}:${DASHBOARD_PORT}"
+
+# You should enable NVTE_FP8_BLOCK_SCALING_FP32_SCALES to use fp32 scales in fp8 training
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
     \"PYTHONPATH\": \"/root/Megatron-LM/\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
-    \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\"
+    \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\",
+    \"NVTE_FP8_BLOCK_SCALING_FP32_SCALES\": \"1\",
+    \"NCCL_TIMEOUT_MS\":\"36000000\"
   }
 }"
 
-ray job submit --address="http://127.0.0.1:8265" \
+ray job submit --address="${RAY_ADDRESS}" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
    -- python3 train.py \
-   --actor-num-nodes 1 \
+   --actor-num-nodes 2 \
    --actor-num-gpus-per-node 8 \
    --colocate \
    ${MODEL_ARGS[@]} \

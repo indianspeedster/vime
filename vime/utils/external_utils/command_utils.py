@@ -110,7 +110,7 @@ def execute_train(
     exec_command(
         # vLLM renames its subprocesses (VLLM::EngineCore / Worker_TP*), so match
         # the renamed children too; the [v]/[M] brackets avoid matching pkill itself.
-        "pkill -9 -f '[v]llm serve|VLL[M]::'; "
+        "pkill -9 vllm; "
         "sleep 3; "
         f"{'' if external_ray else 'ray stop --force; '}"
         f"{'' if external_ray else 'pkill -9 ray; '}"
