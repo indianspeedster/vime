@@ -2,15 +2,17 @@
 # Async (non-colocated) GRPO for Qwen3-8B on ROCm (gfx950 / MI350): train_async.py,
 # actor and rollout on disjoint GPUs, RCCL-broadcast weight sync (no colocate IPC).
 
-# Clean leftovers from a previous run (vLLM orphans procs named VLLM::*).
+# for rerun the task
 ray stop --force
-pkill -9 -f "VLLM::"; pkill -9 -f "EngineCore"; pkill -9 -f "ray::"
-pkill -9 -f "raylet|gcs_server|ray/dashboard|default_worker"
-pkill -9 -f "train_async.py|train.py"
+pkill -9 ray
+pkill -9 python
 sleep 3
-pkill -9 -f "VLLM::"
+pkill -9 ray
+pkill -9 python
 
 set -ex
+
+# will prevent ray from buffering stdout/stderr
 export PYTHONUNBUFFERED=1
 
 # Clear baked NVTE_* so Megatron sets the attn backend from --attention-backend flash.
