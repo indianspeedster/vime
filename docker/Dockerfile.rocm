@@ -194,17 +194,17 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
 FROM aiter AS install_vime
 
 # Use vime's mainline Megatron (NVIDIA/Megatron-LM at ${MEGATRON_COMMIT}) plus the
-# shared docker/patch/${PATCH_VERSION}/megatron.patch, identical to docker/Dockerfile.
-# This keeps the ROCm build in lockstep with the CUDA build and removes the need for
-# the radixark/miles fork (and its miles_compat shim). The ROCm fork-after-HIP-init
-# checkpoint segfault is handled at runtime by vime.utils.rocm_checkpoint_writer.
+# AMD megatron.patch under docker/amd_patch/${PATCH_VERSION}/, mirroring slime's
+# docker/amd_patch layout so AMD-specific patches can be synced from upstream slime.
+# The ROCm fork-after-HIP-init checkpoint segfault is handled at runtime by
+# vime.utils.rocm_checkpoint_writer.
 ARG PATCH_VERSION=latest
 ARG MEGATRON_COMMIT=1dcf0dafa884ad52ffb243625717a3471643e087
 RUN --mount=type=cache,target=/root/.cache/pip \
     git clone https://github.com/NVIDIA/Megatron-LM.git --recursive /root/Megatron-LM && \
     cd /root/Megatron-LM && git checkout ${MEGATRON_COMMIT}
 
-COPY docker/patch/${PATCH_VERSION}/megatron.patch /root/Megatron-LM/
+COPY docker/amd_patch/${PATCH_VERSION}/megatron.patch /root/Megatron-LM/
 RUN cd /root/Megatron-LM && \
     git update-index --refresh && \
     git apply megatron.patch --3way && \
