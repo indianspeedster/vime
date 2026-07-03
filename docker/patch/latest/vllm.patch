@@ -56,7 +56,7 @@ diff --git a/vllm/model_executor/layers/fused_moe/all2all_utils.py b/vllm/model_
 diff --git a/vllm/entrypoints/serve/dev/rlhf/api_router.py b/vllm/entrypoints/serve/dev/rlhf/api_router.py
 --- a/vllm/entrypoints/serve/dev/rlhf/api_router.py
 +++ b/vllm/entrypoints/serve/dev/rlhf/api_router.py
-@@ -91,6 +91,38 @@ async def resume_generation(raw_request: Request) -> JSONResponse:
+@@ -91,6 +91,51 @@ async def resume_generation(raw_request: Request) -> JSONResponse:
          )
  
  
@@ -71,15 +71,28 @@ diff --git a/vllm/entrypoints/serve/dev/rlhf/api_router.py b/vllm/entrypoints/se
 +
 +    try:
 +        body = await raw_request.json()
-+    except json.JSONDecodeError:
-+        body = {}
++    except json.JSONDecodeError as e:
++        raise HTTPException(status_code=400, detail="Invalid JSON format") from e  # noqa: B904
 +
 +    request_ids = body.get("request_ids")
-+    if not request_ids:
-+        request_ids = list(engine.output_processor.request_states.keys())
 +
 +    try:
-+        await engine.abort(request_ids)
++        if request_ids:
++            # Body ids are external (user-supplied) request ids.
++            await engine.abort(request_ids)
++        else:
++            # The dev RL server runs AsyncLLM; abort everything it is tracking.
++            # request_states is keyed by internal ids; parent_requests holds
++            # parallel-sampling parents. Abort both as internal ids.
++            from vllm.v1.engine.async_llm import AsyncLLM
++
++            assert isinstance(engine, AsyncLLM)
++            op = engine.output_processor
++            request_ids = [
++                *op.request_states.keys(),
++                *op.parent_requests.keys(),
++            ]
++            await engine.abort(request_ids, internal=True)
 +        return JSONResponse(
 +            content={"status": "aborted", "aborted": len(request_ids)},
 +            status_code=HTTPStatus.OK.value,
