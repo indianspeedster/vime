@@ -26,7 +26,6 @@ vime 构建于 `slime <https://github.com/THUDM/slime>`_ 之上，slime 正是 G
    :caption: Dense
 
    examples/qwen3-4B.md
-   examples/gemma4.md
 
 .. toctree::
    :maxdepth: 1

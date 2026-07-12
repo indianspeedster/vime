@@ -2,6 +2,7 @@ import pytest
 
 from vime.ray.rollout_validation import validate_server_group_gpu_indices
 
+
 NUM_GPUS = 0
 
 
@@ -11,7 +12,7 @@ def test_validate_server_group_gpu_indices_accepts_valid_config():
         worker_type="regular",
         gpu_offset=2,
         num_gpus_per_engine=1,
-        num_gpus_per_engine_on_node=1,
+        num_gpu_per_engine=1,
         num_engines=2,
         num_available_gpus=4,
         rollout_num_gpus=4,
@@ -25,7 +26,7 @@ def test_validate_server_group_gpu_indices_allows_empty_group():
         worker_type="placeholder",
         gpu_offset=4,
         num_gpus_per_engine=1,
-        num_gpus_per_engine_on_node=1,
+        num_gpu_per_engine=1,
         num_engines=0,
         num_available_gpus=4,
         rollout_num_gpus=4,
@@ -40,7 +41,7 @@ def test_validate_server_group_gpu_indices_reports_config_context():
             worker_type="regular",
             gpu_offset=3,
             num_gpus_per_engine=2,
-            num_gpus_per_engine_on_node=2,
+            num_gpu_per_engine=2,
             num_engines=1,
             num_available_gpus=4,
             rollout_num_gpus=4,

@@ -9,7 +9,7 @@ from safetensors.torch import load_file
 from vime.backends.megatron_utils.hf_checkpoint_saver import (
     _clear_existing_hf_weights,
     _copy_hf_assets,
-    _finalize_local_shards,
+    _finalize_shard_files,
     _SafetensorShardWriter,
     _write_pending_chunk,
     save_hf_model_direct_to_path,
@@ -88,10 +88,7 @@ def test_finalize_shard_files_merges_node_writer_states(tmp_path: Path):
     writer0.write([("layers.0.weight", torch.ones(2, 2))], shard_idx=0)
     writer1.write([("layers.1.weight", torch.zeros(2, 2))], shard_idx=1)
 
-    # each rank renames its own files off the shared plan; rank 0 writes the index
-    states = [writer0.state(), writer1.state()]
-    for rank, state in enumerate(states):
-        _finalize_local_shards(tmp_path, state, states, write_index=rank == 0)
+    _finalize_shard_files(tmp_path, [writer0.state(), writer1.state()])
 
     index = json.loads((tmp_path / "model.safetensors.index.json").read_text(encoding="utf-8"))
     assert index["metadata"]["total_size"] == 32
@@ -127,9 +124,7 @@ def test_pending_chunk_write_flushes_incomplete_node_group(tmp_path: Path):
     for i, writer in enumerate(writers):
         pending_writes[i] = _write_pending_chunk(writer, pending_writes[i])
 
-    states = [writer.state() for writer in writers]
-    for rank, state in enumerate(states):
-        _finalize_local_shards(tmp_path, state, states, write_index=rank == 0)
+    _finalize_shard_files(tmp_path, [writer.state() for writer in writers])
 
     index = json.loads((tmp_path / "model.safetensors.index.json").read_text(encoding="utf-8"))
     assert index["weight_map"] == {f"layers.{i}.weight": f"model-{i + 1:05d}-of-00005.safetensors" for i in range(5)}

@@ -106,31 +106,22 @@ def _deserialize_ipc_update_info(payload: str) -> dict[str, list]:
 
 
 def _merge_ipc_update_infos(infos: Sequence[dict[str, list]]) -> dict[str, list]:
-    """Merge per-rank IPC payloads, including empty or uneven expert buckets."""
+    """Merge per-rank IPC payloads so each weight has handles for every GPU UUID in the slot."""
     if not infos:
         raise ValueError("no IPC update_info payloads to merge")
-
-    merged: dict[str, tuple[str, list[int], dict[str, tuple]]] = {}
-    for info in infos:
-        for name, dtype_name, shape, handles in zip(
-            info["names"], info["dtype_names"], info["shapes"], info["ipc_handles"], strict=True
-        ):
-            if name not in merged:
-                merged[name] = (dtype_name, shape, dict(handles))
-                continue
-            merged_dtype, merged_shape, merged_handles = merged[name]
-            if dtype_name != merged_dtype or shape != merged_shape:
-                raise ValueError(
-                    f"inconsistent IPC metadata for {name}: "
-                    f"{(merged_dtype, merged_shape)} != {(dtype_name, shape)}"
-                )
-            merged_handles.update(handles)
-
+    base = infos[0]
+    merged_handles: list[dict[str, tuple]] = []
+    num_params = len(base["names"])
+    for i in range(num_params):
+        combined: dict[str, tuple] = {}
+        for info in infos:
+            combined.update(info["ipc_handles"][i])
+        merged_handles.append(combined)
     return {
-        "names": list(merged),
-        "dtype_names": [metadata[0] for metadata in merged.values()],
-        "shapes": [metadata[1] for metadata in merged.values()],
-        "ipc_handles": [metadata[2] for metadata in merged.values()],
+        "names": base["names"],
+        "dtype_names": base["dtype_names"],
+        "shapes": base["shapes"],
+        "ipc_handles": merged_handles,
     }
 
 

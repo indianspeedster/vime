@@ -129,35 +129,28 @@ class TestMegatronRoleConfig:
         args = _base_args(megatron_config_path=path, use_critic=False)
 
         class DummyModel:
-            def __init__(self, model_args, with_ref=False, with_opd_teacher=False):
+            def __init__(self, model_args):
                 self.args = model_args
-                self.with_ref = with_ref
-                self.with_opd_teacher = with_opd_teacher
-                self.create_calls = []
+                self.init_calls = []
                 self.rollout_manager = None
 
-            def create(self, rollout_manager=None):
-                self.rollout_manager = rollout_manager
-                self.create_calls.append(
+            def async_init(self, model_args, role, with_ref=False, with_opd_teacher=False):
+                self.args = model_args
+                self.init_calls.append(
                     {
-                        "args": self.args,
-                        "with_ref": self.with_ref,
-                        "with_opd_teacher": self.with_opd_teacher,
-                        "rollout_manager": rollout_manager,
+                        "args": model_args,
+                        "role": role,
+                        "with_ref": with_ref,
+                        "with_opd_teacher": with_opd_teacher,
                     }
                 )
                 return [7]
 
-        def fake_allocate_train_group(
-            args,
-            num_nodes,
-            num_gpus_per_node,
-            pg,
-            role="actor",
-            with_ref=False,
-            with_opd_teacher=False,
-        ):
-            return DummyModel(args, with_ref=with_ref, with_opd_teacher=with_opd_teacher)
+            def set_rollout_manager(self, rollout_manager):
+                self.rollout_manager = rollout_manager
+
+        def fake_allocate_train_group(args, num_nodes, num_gpus_per_node, pg, role="actor"):
+            return DummyModel(args)
 
         monkeypatch.setattr(placement_group_module, "allocate_train_group", fake_allocate_train_group)
         monkeypatch.setattr(placement_group_module.ray, "get", lambda value: value)
@@ -170,5 +163,6 @@ class TestMegatronRoleConfig:
 
         assert critic_model is None
         assert actor_model.args.lr == 1e-6
-        assert actor_model.create_calls[0]["args"].lr == 1e-6
+        assert actor_model.init_calls[0]["args"].lr == 1e-6
+        assert actor_model.init_calls[0]["role"] == "actor"
         assert args.start_rollout_id == 7

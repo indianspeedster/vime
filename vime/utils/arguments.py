@@ -157,15 +157,6 @@ def get_vime_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--release-train",
-                action="store_true",
-                default=False,
-                help=(
-                    "Release Megatron training actors during rollout and recreate them before each train step. "
-                    "Requires disk weight sync and --save for Megatron reload."
-                ),
-            )
-            parser.add_argument(
                 "--update-weight-disk-dir",
                 type=str,
                 default=None,
@@ -220,16 +211,6 @@ def get_vime_extra_args_provider(add_custom_arguments=None):
                     "trainer rank's files are durably on local disk, before rank 0 fires the engine "
                     "RPCs. Signature: ``def hook(args, version_dir: str, rollout_engines) -> None``. "
                     "Called from every trainer rank; the hook gates itself."
-                ),
-            )
-            parser.add_argument(
-                "--custom-update-weight-post-write-path",
-                type=str,
-                default=None,
-                help=(
-                    "Path to a custom function called on each trainer rank after a disk weight sync is written, "
-                    "before rollout engines read it. Signature: "
-                    "def hook(args, version_dir: str, rollout_engines) -> None."
                 ),
             )
             parser.add_argument(
@@ -1417,7 +1398,7 @@ def get_vime_extra_args_provider(add_custom_arguments=None):
                 "--loss-mask-type",
                 type=str,
                 default="qwen",
-                choices=["qwen", "qwen3", "qwen3_5", "gemma4", "distill_qwen"],
+                choices=["qwen", "qwen3", "qwen3_5", "distill_qwen"],
                 help="Loss mask type",
             )
             parser.add_argument(
@@ -1957,17 +1938,9 @@ def vime_validate_args(args):
         "debug_rollout_only and debug_train_only cannot be set at the same time, " "please set only one of them."
     )
 
-    # Colocate normally offloads Megatron between rollout and train. Release-train
-    # destroys Megatron actors instead, so only rollout needs memory-saver offload.
+    # always true on offload for colocate at the moment.
     if args.colocate:
-        if getattr(args, "release_train", False):
-            if args.offload_train:
-                logger.info("Ignoring --offload-train because --release-train releases train actors instead.")
-            args.offload_train = False
-            if args.offload_rollout is False:
-                logger.info("Ignoring --no-offload-rollout because colocated --release-train needs rollout offload.")
-            args.offload_rollout = True
-        elif args.offload_train is None:
+        if args.offload_train is None:
             args.offload_train = True
         if args.offload_rollout is None:
             args.offload_rollout = True
@@ -2065,19 +2038,5 @@ def vime_validate_args(args):
 
     if args.only_train_params_name_list and args.freeze_params_name_list:
         raise ValueError("You can only specify ONE of: --only-train-params-name-list, or --freeze-params-name-list.")
-
-    if getattr(args, "release_train", False):
-        if args.train_backend != "megatron":
-            raise ValueError("--release-train is only supported with the Megatron train backend.")
-        if args.use_critic:
-            raise ValueError("--release-train does not support critic training yet.")
-        if args.keep_old_actor:
-            raise ValueError("--release-train does not support --keep-old-actor.")
-        if args.save is None:
-            raise ValueError("--release-train requires --save so the next Megatron actor can reload.")
-        if args.save_interval is None:
-            args.save_interval = 1
-        if args.update_weight_mode != "full" or args.update_weight_transport != "disk":
-            raise ValueError("--release-train requires --update-weight-mode=full and --update-weight-transport=disk.")
 
     _validate_update_weight_args(args)

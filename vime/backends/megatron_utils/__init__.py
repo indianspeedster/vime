@@ -36,8 +36,8 @@ try:
 
     patch_rotary_embedding(Qwen3VLTextRotaryEmbedding)
     patch_rotary_embedding(Qwen3VLMoETextRotaryEmbedding)
-except Exception as error:
-    logging.warning("Qwen3-VL rotary compatibility patch is unavailable: %s", error)
+except ImportError:
+    pass
 
 logging.getLogger("megatron").setLevel(logging.WARNING)
 

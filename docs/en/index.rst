@@ -26,7 +26,6 @@ vime is built on `slime <https://github.com/THUDM/slime>`_, the RL framework beh
    :caption: Dense
 
    examples/qwen3-4B.md
-   examples/gemma4.md
 
 .. toctree::
    :maxdepth: 1
