@@ -71,6 +71,9 @@ SUITES = {
         ("test_qwen2.5_0.5B_debug_rollout_then_train.py", 8, "", {}),
         ("test_qwen2.5_0.5B_opd_vllm.py", 8, "", {}),
     ],
+    "vime-customized": [
+        ("test_qwen2_5_0_5B_non_colocate_pp.py", 4, "", {}),
+    ],
     "precision": [
         ("test_qwen3_0.6B_parallel_check.py", 8, "", {}),
     ],

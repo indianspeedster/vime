@@ -152,6 +152,8 @@ steps:
             value: vllm-config
           - label: "run-ci-megatron — 8 GPU, 14 runs"
             value: megatron
+          - label: "run-ci-vime-customized — 4 GPU, 1 test"
+            value: vime-customized
           - label: "run-ci-precision — 8 GPU, 1 test"
             value: precision
           - label: "run-ci-ckpt — 8 GPU, 2 runs"
