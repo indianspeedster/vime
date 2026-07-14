@@ -187,12 +187,17 @@ class VLLMEngine(RayActor):
     def _init_external(self, expect_server_args, external_engine_need_check_fields):
         logger.info(f"Use external vLLM engine (rank={self.rank}, expect_server_args={expect_server_args})")
 
+        def _matches_expected(actual, expected):
+            if isinstance(actual, dict) and isinstance(expected, dict):
+                return all(key in actual and _matches_expected(actual[key], value) for key, value in expected.items())
+            return actual == expected
+
         def _sanity_check_server_args(actual_server_args, expect_server_args):
             for name in external_engine_need_check_fields:
                 expect_value = expect_server_args.get(name)
                 actual_value = actual_server_args.get(name)
-                assert (
-                    actual_value == expect_value
+                assert _matches_expected(
+                    actual_value, expect_value
                 ), f"{name=} {expect_value=} {actual_value=} {expect_server_args=} {actual_server_args=}"
 
         actual_server_args = get_server_info(f"http://{self.server_host}:{self.server_port}")
@@ -215,7 +220,9 @@ class VLLMEngine(RayActor):
                 "worker_type": self.worker_type,
             }
             if self.worker_type == "prefill":
-                bootstrap_port = server_args_dict.get("disaggregation_bootstrap_port")
+                bootstrap_port = server_args_dict.get("_disaggregation_bootstrap_port")
+                if bootstrap_port is None:
+                    bootstrap_port = server_args_dict.get("disaggregation_bootstrap_port")
                 if bootstrap_port is None:
                     raise RuntimeError(
                         f"Prefill worker {worker_url} does not have disaggregation_bootstrap_port; "
@@ -360,8 +367,25 @@ class VLLMEngine(RayActor):
     def finish_weight_update(self) -> dict:
         return self._make_request("finish_weight_update", {})
 
-    def update_weights_from_disk(self, model_path: str, load_format: str | None = None):
+    def pull_weights(self, target_version: int):
+        return self._make_request(
+            "pull_weights",
+            {
+                "local_checkpoint_dir": self.args.update_weight_local_checkpoint_dir,
+                "source_dir": self.args.update_weight_disk_dir,
+                "target_version": target_version,
+            },
+        )
+
+    def update_weights_from_disk(
+        self,
+        model_path: str,
+        load_format: str | None = None,
+        weight_version: str | None = None,
+    ):
         del load_format
+        if self.node_rank != 0:
+            return
         response = requests.post(
             f"http://{self.server_host}:{self.server_port}/collective_rpc",
             json={"method": "reload_weights", "kwargs": {"weights_path": model_path, "is_checkpoint_format": True}},
@@ -371,6 +395,8 @@ class VLLMEngine(RayActor):
         except requests.exceptions.HTTPError as e:
             e.add_note(f"{response.text=}")
             raise
+        if weight_version is not None:
+            self._weight_version = str(weight_version)
         return response.json()
 
     def init_weights_update_group(self, master_address, master_port, rank_offset, world_size, group_name, backend):
@@ -417,6 +443,8 @@ class VLLMEngine(RayActor):
         return result
 
     def pause_generation(self):
+        if self.node_rank != 0:
+            return
         response = requests.post(
             f"http://{self.server_host}:{self.server_port}/pause",
             params={"mode": "keep", "clear_cache": "false"},
@@ -426,6 +454,8 @@ class VLLMEngine(RayActor):
         return response
 
     def continue_generation(self):
+        if self.node_rank != 0:
+            return
         response = requests.post(f"http://{self.server_host}:{self.server_port}/resume", json={})
         response.raise_for_status()
         return response
@@ -448,11 +478,15 @@ class VLLMEngine(RayActor):
         with_stack: bool | None = None,
         record_shapes: bool | None = None,
     ):
+        if self.node_rank != 0:
+            return
         response = requests.post(f"http://{self.server_host}:{self.server_port}/start_profile", json={})
         response.raise_for_status()
         return response
 
     def stop_profile(self):
+        if self.node_rank != 0:
+            return
         response = requests.post(f"http://{self.server_host}:{self.server_port}/stop_profile", json={})
         response.raise_for_status()
         return response
@@ -556,12 +590,18 @@ def _compute_server_args(
             kwargs["headless"] = True
 
     if worker_type == "prefill":
-        kwargs["disaggregation_mode"] = "prefill"
         assert (
             disaggregation_bootstrap_port is not None
         ), "disaggregation_bootstrap_port must be set for prefill worker"
+        kwargs["kv_transfer_config"] = {
+            "kv_connector": "NixlConnector",
+            "kv_role": "kv_producer",
+        }
     elif worker_type == "decode":
-        kwargs["disaggregation_mode"] = "decode"
+        kwargs["kv_transfer_config"] = {
+            "kv_connector": "NixlConnector",
+            "kv_role": "kv_consumer",
+        }
 
     if args.use_rollout_routing_replay:
         kwargs["enable_return_routed_experts"] = True
@@ -636,10 +676,7 @@ def _compute_server_args(
 
 
 def _vllm_server_field_names() -> frozenset[str]:
-    """Valid vLLM server-arg field names: ``AsyncEngineArgs`` ∪ ``FrontendArgs``. vLLM has no
-    single ``ServerArgs`` class (sglang does); their union is the faithful translation. Single
-    source of truth for ``--vllm-*`` flag generation and ``--vllm-config`` override validation.
-    """
+    """Return the vLLM fields accepted by CLI generation and config overrides."""
     from vllm.engine.arg_utils import AsyncEngineArgs
     from vllm.entrypoints.openai.cli_args import FrontendArgs
 

@@ -8,8 +8,8 @@ build (PR and push to `main`):
 | Step | Purpose | Queue (machine) |
 |---|---|---|
 | `pre-commit` | pre-commit gate | `small_cpu_queue_premerge` (r6in.large) |
-| `plugin-contracts` | plugin contract tests (19 files) | `medium_cpu_queue_premerge` (r6in.4xlarge) |
-| `agent-adapter` | agent adapter tests (3 files) | `small_cpu_queue_premerge` |
+| `plugin-contracts` | plugin contracts and CPU tests (23 files) | `medium_cpu_queue_premerge` (r6in.4xlarge) |
+| `agent-adapter` | agent adapter tests (4 files) | `small_cpu_queue_premerge` |
 | `utils` | utils tests (`pytest tests/utils`) | `medium_cpu_queue_premerge` |
 
 The three test steps depend on the pre-commit gate. Each suite runs its files
@@ -61,7 +61,7 @@ reports a passing commit status even if nobody unblocks the GPU gate.
 GPU jobs run on the shared **`mithril-h100-pool`** queue, following the same
 pattern vllm-omni uses for it: each job is a Kubernetes pod (agent-stack-k8s
 `kubernetes` plugin) on an H100 SXM node, with GPUs allocated via
-`nvidia.com/gpu` limits (4 or 8), a memory-backed `/dev/shm`, and the node's
+`nvidia.com/gpu` limits (2 to 8), a memory-backed `/dev/shm`, and the node's
 `/mnt/hf-cache` mounted as `HF_HOME`. vime tests `hf download` their models at
 startup, so a warm HF cache is all they need. `WANDB_API_KEY` is not wired up
 yet; runs report without wandb until it's added (e.g. as a k8s secret in the

@@ -171,7 +171,10 @@ def test_compute_server_args_applies_worker_type_and_bootstrap_port(vllm_args):
         worker_type="prefill",
         disaggregation_bootstrap_port=12345,
     )
-    assert sa_prefill["disaggregation_mode"] == "prefill"
+    assert sa_prefill["kv_transfer_config"] == {
+        "kv_connector": "NixlConnector",
+        "kv_role": "kv_producer",
+    }
 
     sa_decode, _ = mod._compute_server_args(
         vllm_args,
@@ -181,7 +184,10 @@ def test_compute_server_args_applies_worker_type_and_bootstrap_port(vllm_args):
         port=8000,
         worker_type="decode",
     )
-    assert sa_decode["disaggregation_mode"] == "decode"
+    assert sa_decode["kv_transfer_config"] == {
+        "kv_connector": "NixlConnector",
+        "kv_role": "kv_consumer",
+    }
 
 
 @pytest.mark.unit
@@ -575,9 +581,19 @@ def test_update_weights_from_disk_posts_collective_rpc(vllm_engine, monkeypatch)
 
     monkeypatch.setattr(mod.requests, "post", fake_post)
 
-    assert vllm_engine.update_weights_from_disk("/tmp/model") == {"reloaded": True}
+    assert vllm_engine.update_weights_from_disk("/tmp/model", weight_version="8") == {"reloaded": True}
     assert seen[0][0] == "http://127.0.0.1:8765/collective_rpc"
     assert seen[0][3]["method"] == "reload_weights"
+    assert vllm_engine.get_weight_version() == "8"
+
+
+@pytest.mark.unit
+def test_profile_worker_rank_skips_http(vllm_engine, monkeypatch):
+    vllm_engine.node_rank = 1
+    monkeypatch.setattr(mod.requests, "post", lambda *args, **kwargs: pytest.fail("unexpected HTTP request"))
+
+    assert vllm_engine.start_profile() is None
+    assert vllm_engine.stop_profile() is None
 
 
 @pytest.mark.unit

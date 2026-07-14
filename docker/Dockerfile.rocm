@@ -194,8 +194,7 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
 FROM aiter AS install_vime
 
 # Use vime's mainline Megatron (NVIDIA/Megatron-LM at ${MEGATRON_COMMIT}) plus the
-# AMD megatron.patch under docker/amd_patch/${PATCH_VERSION}/, mirroring slime's
-# docker/amd_patch layout so AMD-specific patches can be synced from upstream slime.
+# AMD megatron.patch under docker/amd_patch/${PATCH_VERSION}/.
 # The ROCm fork-after-HIP-init checkpoint segfault is handled at runtime by
 # vime.utils.rocm_checkpoint_writer.
 ARG PATCH_VERSION=latest

@@ -37,22 +37,20 @@ RUN ln -sf /usr/bin/python3 /usr/local/bin/python
 
 # ====================================== Python dependencies ============================================
 
-# The compilation is slow, thus should be put at top
-# TransformerEngines does not support too high FA2
-RUN MAX_JOBS=64 pip -v install flash-attn==2.7.4.post1 --no-build-isolation
+# The validated TransformerEngine 2.16 context-parallel stack uses FA2 + FA3.
+RUN pip uninstall -y flash-attn-4 flash_attn_4 || true
+RUN MAX_JOBS=64 pip -v install flash-attn==2.8.3 --no-build-isolation
 
-# The compilation is slow, thus should be put at top
+# This FA3 commit provides the window_size_left/window_size_right API used by TE 2.16.
 RUN git clone https://github.com/Dao-AILab/flash-attention.git && \
-    cd flash-attention/ && git checkout fbf24f67cf7f6442c5cfb2c1057f4bfc57e72d89 && git submodule update --init && cd hopper/ && \
-    MAX_JOBS=96 python setup.py install && \
-    export python_path=`python -c "import site; print(site.getsitepackages()[0])"` && \
-    mkdir -p $python_path/flash_attn_3 && \
-    cp flash_attn_interface.py $python_path/flash_attn_3/flash_attn_interface.py && \
-    rm -rf flash-attention/
+    cd flash-attention/ && git checkout 002cce0a1068f8c07dfccb5a1d232b9a3276947c && git submodule update --init && \
+    cd hopper/ && \
+    FLASH_ATTENTION_FORCE_BUILD=TRUE MAX_JOBS=96 pip -v install . --no-build-isolation && \
+    cd /root/ && rm -rf flash-attention/
 
 RUN pip install git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f89a4de258c0702932a1c --no-deps
 
-RUN pip install flash-linear-attention==0.4.1
+RUN pip install flash-linear-attention==0.4.2
 # FlashQLA: optional GDN backend for Qwen3.5/Qwen3-Next (--qwen-gdn-backend flashqla; requires SM90+)
 ARG INSTALL_FLASHQLA=0
 RUN if [ "${INSTALL_FLASHQLA}" = "1" ]; then \
@@ -74,10 +72,10 @@ RUN apt-get update && \
 
 # TE does not publish a cu13 wheel; build from source when ENABLE_CUDA_13=1.
 RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
-      pip install nvidia-mathdx pybind11 ninja wheel packaging && \
-      pip -v install --no-build-isolation git+https://github.com/NVIDIA/TransformerEngine.git@release_v2.10; \
+      pip install nvidia-mathdx==26.6.0 pybind11 ninja wheel packaging && \
+      pip -v install --no-build-isolation git+https://github.com/NVIDIA/TransformerEngine.git@release_v2.16; \
     else \
-      pip -v install --no-build-isolation "transformer_engine[pytorch]==2.10.0"; \
+      pip -v install --no-build-isolation "transformer_engine[pytorch]==2.16.1"; \
     fi
 
 RUN NVCC_APPEND_FLAGS="--threads 4" \
@@ -107,12 +105,7 @@ RUN if [ "${ENABLE_CUDA_13}" != "1" ]; then \
       pip install nvidia-cudnn-cu12==9.16.0.29; \
     fi
 
-# reinstall numpy 1.x for megatron; pin scipy<1.18 alongside it. vime's vllm/vllm-openai
-# base ships NO scipy, so unpinned it pulls scipy>=1.18, which hard-requires numpy>=2 and
-# uses np.long (removed in numpy>=1.24) -> AttributeError against the numpy<2 above ->
-# `import scipy/transformers` crash. slime's sglang base resolves scipy to 1.17.1 (numpy-1.x
-# compatible) natively, so slime needs no scipy pin -- this is a vime base-image divergence.
-# Real boundary is 1.18 (slime runs 1.17.1 fine), not the earlier 1.14 guess.
+# reinstall numpy 1.x for megatron
 RUN pip install "numpy<2" "scipy<1.18"
 
 RUN rm -rf /root/.cache/pip /root/flash-attention
@@ -153,7 +146,6 @@ RUN cd /root/vime/vime/backends/megatron_utils/kernels/int4_qat && \
 
 # Reset ENTRYPOINT inherited from the vllm/vllm-openai base (`vllm serve`), so the
 # image is a plain bash/ray environment. Without this, `docker run ... bash -c ...`
-# and `ray job submit` append to `vllm serve` and break. Base-image-coupled: slime's
-# base has no such entrypoint, so slime's Dockerfile doesn't need this.
+# and `ray job submit` append to `vllm serve` and break.
 ENTRYPOINT []
 CMD ["/bin/bash"]
