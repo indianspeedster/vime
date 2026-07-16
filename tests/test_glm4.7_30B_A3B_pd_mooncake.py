@@ -13,18 +13,31 @@ MODEL_NAME = "GLM-4.7-Flash"
 MODEL_TYPE = "glm4.7-30B-A3B"
 NUM_GPUS = 8
 
+# ROCm converts HF->Megatron into a container-local path (no modelopt bridge).
+MG_PATH = f"/tmp/{MODEL_NAME}_torch_dist"
+
 
 def prepare():
     U.exec_command("mkdir -p /root/models /root/datasets")
     U.exec_command(f"hf download {MODEL_REPO} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
-    U.convert_checkpoint(
-        model_name=MODEL_NAME,
-        megatron_model_type=MODEL_TYPE,
-        num_gpus_per_node=NUM_GPUS,
-        dir_dst="/root/models",
-        hf_checkpoint=f"/root/models/{MODEL_NAME}",
-    )
+    if U.is_rocm():
+        U.convert_checkpoint(
+            model_name=MODEL_NAME,
+            megatron_model_type=MODEL_TYPE,
+            num_gpus_per_node=NUM_GPUS,
+            dir_dst="/tmp",
+            hf_checkpoint=f"/root/models/{MODEL_NAME}",
+            extra_args="--no-gradient-accumulation-fusion --attention-backend flash",
+        )
+    else:
+        U.convert_checkpoint(
+            model_name=MODEL_NAME,
+            megatron_model_type=MODEL_TYPE,
+            num_gpus_per_node=NUM_GPUS,
+            dir_dst="/root/models",
+            hf_checkpoint=f"/root/models/{MODEL_NAME}",
+        )
 
 
 def write_vllm_config() -> str:
@@ -56,7 +69,10 @@ def write_vllm_config() -> str:
 def execute():
     vllm_config = write_vllm_config()
 
-    ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME} " f"--ref-load /root/models/{MODEL_NAME}_torch_dist "
+    if U.is_rocm():
+        ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME} " f"--ref-load {MG_PATH}/ "
+    else:
+        ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME} " f"--ref-load /root/models/{MODEL_NAME}_torch_dist "
     rollout_args = (
         "--prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl "
         "--input-key prompt "
@@ -111,9 +127,9 @@ def execute():
         "--rollout-num-gpus-per-engine 4 "
         "--vllm-data-parallel-size 4 "
         "--vllm-enable-expert-parallel "
-        "--vllm-gpu-memory-utilization 0.45 "
+        f"--vllm-gpu-memory-utilization {'0.3' if U.is_rocm() else '0.45'} "
         "--vllm-max-num-seqs 16 "
-        "--vllm-max-cudagraph-capture-size 8 "
+        f"{'' if U.is_rocm() else '--vllm-max-cudagraph-capture-size 8 '}"
         '--vllm-speculative-config \'{"method":"mtp","num_speculative_tokens":3}\' '
         "--router-request-timeout-secs 1200 "
         f"--vllm-config {vllm_config} "
@@ -130,6 +146,8 @@ def execute():
         "--colocate "
         "--moe-token-dispatcher-type alltoall "
     )
+    if U.is_rocm():
+        misc_args += "--no-gradient-accumulation-fusion --no-offload-train "
     train_args = (
         f"{ckpt_args} "
         f"{rollout_args} "

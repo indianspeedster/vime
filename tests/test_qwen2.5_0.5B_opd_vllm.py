@@ -13,11 +13,23 @@ NUM_TRAIN_GPUS = 4
 TEACHER_HOST = "127.0.0.1"
 TEACHER_PORT = 13141
 
+# ROCm converts HF->Megatron (no modelopt bridge). Write to a container-local
+# path so concurrent short tests sharing this model don't race on the output.
+MG_PATH = f"/tmp/{MODEL_NAME}_torch_dist"
+
 
 def prepare():
     U.exec_command("mkdir -p /root/models /root/datasets")
     U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/gsm8k")
+    if U.is_rocm():
+        U.convert_checkpoint(
+            MODEL_NAME,
+            MODEL_TYPE,
+            num_gpus_per_node=1,
+            extra_args="--no-gradient-accumulation-fusion --attention-backend flash",
+            dir_dst="/tmp",
+        )
 
 
 def _get_gpu_split():
@@ -89,7 +101,10 @@ def execute():
         teacher_process = _launch_teacher_server(teacher_gpu)
 
     try:
-        ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/models/{MODEL_NAME}/ "
+        if U.is_rocm():
+            ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ --ref-load {MG_PATH}/ "
+        else:
+            ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/models/{MODEL_NAME}/ "
 
         rollout_args = (
             "--prompt-data /root/datasets/gsm8k/train.parquet "
@@ -155,9 +170,9 @@ def execute():
 
         vllm_args = (
             "--rollout-num-gpus-per-engine 1 "
-            "--vllm-gpu-memory-utilization 0.7 "
+            f"--vllm-gpu-memory-utilization {'0.3' if U.is_rocm() else '0.7'} "
             "--vllm-max-num-seqs 32 "
-            "--vllm-max-cudagraph-capture-size 16 "
+            f"{'' if U.is_rocm() else '--vllm-max-cudagraph-capture-size 16 '}"
         )
 
         ci_args = "--ci-test "
@@ -171,7 +186,8 @@ def execute():
             "--actor-num-nodes 1 "
             f"--actor-num-gpus-per-node {NUM_TRAIN_GPUS} "
             "--colocate "
-            "--megatron-to-hf-mode bridge "
+            f'{"--megatron-to-hf-mode bridge " if not U.is_rocm() else ""}'
+            f'{"--no-gradient-accumulation-fusion --no-offload-train " if U.is_rocm() else ""}'
         )
 
         train_args = (

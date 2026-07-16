@@ -9,19 +9,34 @@ MODEL_NAME = "Qwen3-0.6B"
 MODEL_TYPE = "qwen3-0.6B"
 NUM_GPUS = 8
 
+# ROCm converts HF->Megatron (no modelopt bridge) into a container-local path.
+MG_PATH = f"/tmp/{MODEL_NAME}_torch_dist"
+
 
 def prepare():
     U.exec_command("mkdir -p /root/models /root/datasets")
     U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
 
-    U.convert_checkpoint(
-        model_name=MODEL_NAME, megatron_model_type=MODEL_TYPE, num_gpus_per_node=NUM_GPUS, dir_dst="/root/models"
-    )
+    if U.is_rocm():
+        U.convert_checkpoint(
+            model_name=MODEL_NAME,
+            megatron_model_type=MODEL_TYPE,
+            num_gpus_per_node=NUM_GPUS,
+            extra_args="--no-gradient-accumulation-fusion --attention-backend flash",
+            dir_dst="/tmp",
+        )
+    else:
+        U.convert_checkpoint(
+            model_name=MODEL_NAME, megatron_model_type=MODEL_TYPE, num_gpus_per_node=NUM_GPUS, dir_dst="/root/models"
+        )
 
 
 def execute():
-    ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/models/{MODEL_NAME}_torch_dist "
+    if U.is_rocm():
+        ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load {MG_PATH}/ "
+    else:
+        ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/models/{MODEL_NAME}_torch_dist "
 
     rollout_args = (
         "--prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl "
@@ -59,8 +74,8 @@ def execute():
     vllm_args = (
         "--rollout-num-gpus-per-engine 2 "
         "--rollout-num-gpus 8 "
-        "--vllm-gpu-memory-utilization 0.8 "
-        "--vllm-max-cudagraph-capture-size 16 "
+        f"--vllm-gpu-memory-utilization {'0.3' if U.is_rocm() else '0.8'} "
+        f"{'' if U.is_rocm() else '--vllm-max-cudagraph-capture-size 16 '}"
         '--vllm-compilation-config \'{"cudagraph_mode":"FULL_DECODE_ONLY"}\' '
     )
 
@@ -77,6 +92,7 @@ def execute():
         "--attention-backend flash "
         "--actor-num-nodes 1 "
         "--colocate "
+        f'{"--no-gradient-accumulation-fusion --no-offload-train " if U.is_rocm() else ""}'
     )
 
     train_args = (

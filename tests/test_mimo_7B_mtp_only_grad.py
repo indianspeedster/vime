@@ -17,6 +17,9 @@ MODEL_NAME = "MiMo-7B-RL"
 MODEL_TYPE = "mimo-7B-rl"
 NUM_GPUS = 8
 
+# ROCm converts HF->Megatron into a container-local path (no modelopt bridge).
+MG_PATH = f"/tmp/{MODEL_NAME}_torch_dist"
+
 
 def prepare():
     """Download model and convert checkpoint with MTP layers."""
@@ -25,18 +28,30 @@ def prepare():
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
 
     # Convert checkpoint with MTP layers enabled
-    U.convert_checkpoint(
-        model_name=MODEL_NAME,
-        megatron_model_type=MODEL_TYPE,
-        num_gpus_per_node=NUM_GPUS,
-        extra_args=" --mtp-num-layers 1",
-        dir_dst="/root/models",
-    )
+    if U.is_rocm():
+        U.convert_checkpoint(
+            model_name=MODEL_NAME,
+            megatron_model_type=MODEL_TYPE,
+            num_gpus_per_node=NUM_GPUS,
+            extra_args=" --mtp-num-layers 1 --no-gradient-accumulation-fusion --attention-backend flash",
+            dir_dst="/tmp",
+        )
+    else:
+        U.convert_checkpoint(
+            model_name=MODEL_NAME,
+            megatron_model_type=MODEL_TYPE,
+            num_gpus_per_node=NUM_GPUS,
+            extra_args=" --mtp-num-layers 1",
+            dir_dst="/root/models",
+        )
 
 
 def execute():
     """Run training with MTP enabled and very short output length to cause truncation."""
-    ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/models/{MODEL_NAME}_torch_dist "
+    if U.is_rocm():
+        ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load {MG_PATH}/ "
+    else:
+        ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/models/{MODEL_NAME}_torch_dist "
 
     # Use very short rollout-max-response-len to ensure all outputs are truncated
     # This should result in zero loss for the main model, leaving only MTP loss
@@ -90,8 +105,8 @@ def execute():
     vllm_args = (
         "--rollout-num-gpus-per-engine 2 "
         "--rollout-num-gpus 8 "
-        "--vllm-gpu-memory-utilization 0.8 "
-        "--vllm-max-cudagraph-capture-size 8 "
+        f"--vllm-gpu-memory-utilization {'0.3' if U.is_rocm() else '0.8'} "
+        f"{'' if U.is_rocm() else '--vllm-max-cudagraph-capture-size 8 '}"
         '--vllm-speculative-config \'{"method":"mtp","num_speculative_tokens":2}\' '
     )
 
@@ -113,6 +128,7 @@ def execute():
         "--actor-num-nodes 1 "
         "--actor-num-gpus-per-node 8 "
         "--colocate "
+        f'{"--no-gradient-accumulation-fusion --no-offload-train " if U.is_rocm() else ""}'
     )
 
     train_args = (

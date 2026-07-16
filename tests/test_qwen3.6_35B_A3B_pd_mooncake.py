@@ -9,18 +9,30 @@ MODEL_TYPE = "qwen3.5-35B-A3B"
 NUM_GPUS = 8
 TORCH_DIST_CKPT = f"/root/models/{MODEL_NAME}_torch_dist"
 
+# ROCm converts HF->Megatron into a container-local path (no modelopt bridge).
+MG_PATH = f"/tmp/{MODEL_NAME}_torch_dist"
+
 
 def prepare():
     U.exec_command("mkdir -p /root/models /root/datasets")
     U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
     U.hf_download_dataset("zhuzilin/aime-2024")
-    U.convert_checkpoint(
-        model_name=MODEL_NAME,
-        megatron_model_type=MODEL_TYPE,
-        num_gpus_per_node=NUM_GPUS,
-        dir_dst="/root/models",
-    )
+    if U.is_rocm():
+        U.convert_checkpoint(
+            model_name=MODEL_NAME,
+            megatron_model_type=MODEL_TYPE,
+            num_gpus_per_node=NUM_GPUS,
+            dir_dst="/tmp",
+            extra_args="--no-gradient-accumulation-fusion --attention-backend flash",
+        )
+    else:
+        U.convert_checkpoint(
+            model_name=MODEL_NAME,
+            megatron_model_type=MODEL_TYPE,
+            num_gpus_per_node=NUM_GPUS,
+            dir_dst="/root/models",
+        )
 
 
 def execute():
@@ -34,7 +46,10 @@ def execute():
         pass
     print(f"Saving debug rollout data to {debug_data_path}")
 
-    ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME} " f"--ref-load {TORCH_DIST_CKPT} "
+    if U.is_rocm():
+        ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME} " f"--ref-load {MG_PATH}/ "
+    else:
+        ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME} " f"--ref-load {TORCH_DIST_CKPT} "
 
     rollout_args = (
         "--prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl "
@@ -95,7 +110,7 @@ def execute():
 
     vllm_args = (
         "--rollout-num-gpus-per-engine 4 "
-        "--vllm-gpu-memory-utilization 0.75 "
+        f"--vllm-gpu-memory-utilization {'0.3' if U.is_rocm() else '0.75'} "
         "--vllm-data-parallel-size 4 "
         "--vllm-enable-expert-parallel "
         "--vllm-max-num-seqs 512 "
@@ -119,6 +134,9 @@ def execute():
         "--moe-token-dispatcher-type flex "
         "--moe-enable-deepep "
     )
+
+    if U.is_rocm():
+        misc_args += "--no-gradient-accumulation-fusion --no-offload-train "
 
     train_args = (
         f"{ckpt_args} "

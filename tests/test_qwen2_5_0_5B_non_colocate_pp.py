@@ -9,18 +9,31 @@ MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
 NUM_GPUS = 4
 
+# ROCm converts HF->Megatron (no modelopt bridge). Write to a container-local
+# path so concurrent short tests sharing this model don't race on the output.
+MG_PATH = f"/tmp/{MODEL_NAME}_torch_dist"
+
 
 def prepare():
     U.exec_command("mkdir -p /root/models /root/datasets")
     U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/gsm8k")
 
-    U.convert_checkpoint(
-        model_name=MODEL_NAME,
-        megatron_model_type=MODEL_TYPE,
-        num_gpus_per_node=NUM_GPUS,
-        dir_dst="/root/models",
-    )
+    if U.is_rocm():
+        U.convert_checkpoint(
+            model_name=MODEL_NAME,
+            megatron_model_type=MODEL_TYPE,
+            num_gpus_per_node=1,
+            extra_args="--no-gradient-accumulation-fusion --attention-backend flash",
+            dir_dst="/tmp",
+        )
+    else:
+        U.convert_checkpoint(
+            model_name=MODEL_NAME,
+            megatron_model_type=MODEL_TYPE,
+            num_gpus_per_node=NUM_GPUS,
+            dir_dst="/root/models",
+        )
 
 
 def execute():
@@ -74,8 +87,8 @@ def execute():
     vllm_args = (
         "--rollout-num-gpus 2 "
         "--rollout-num-gpus-per-engine 1 "
-        "--vllm-gpu-memory-utilization 0.7 "
-        "--vllm-max-cudagraph-capture-size 16 "
+        f"--vllm-gpu-memory-utilization {'0.3' if U.is_rocm() else '0.7'} "
+        f"{'' if U.is_rocm() else '--vllm-max-cudagraph-capture-size 16 '}"
     )
 
     ci_args = "--ci-test "
@@ -88,13 +101,17 @@ def execute():
         "--attention-backend flash "
         "--actor-num-nodes 1 "
         "--actor-num-gpus-per-node 2 "
+        f'{"--no-gradient-accumulation-fusion --no-offload-train " if U.is_rocm() else ""}'
     )
 
-    for megatron_to_hf_mode in ("bridge", "raw"):
+    # ROCm has no modelopt bridge path, so it runs only the converted (raw)
+    # checkpoint mode; CUDA keeps exercising both bridge and raw.
+    modes = ("raw",) if U.is_rocm() else ("bridge", "raw")
+    for megatron_to_hf_mode in modes:
         if megatron_to_hf_mode == "bridge":
             ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ --ref-load /root/models/{MODEL_NAME}/ "
         else:
-            torch_dist_checkpoint = f"/root/models/{MODEL_NAME}_torch_dist"
+            torch_dist_checkpoint = MG_PATH if U.is_rocm() else f"/root/models/{MODEL_NAME}_torch_dist"
             ckpt_args = (
                 f"--hf-checkpoint /root/models/{MODEL_NAME}/ "
                 f"--load {torch_dist_checkpoint} "

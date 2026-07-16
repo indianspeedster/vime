@@ -11,6 +11,9 @@ MODEL_NAME = "Qwen3-30B-A3B"
 MODEL_TYPE = "qwen3-30B-A3B"
 NUM_GPUS = 8
 
+# ROCm converts HF->Megatron into a container-local path (no modelopt bridge).
+MG_PATH = f"/tmp/{MODEL_NAME}_torch_dist"
+
 
 def prepare():
     U.exec_command("mkdir -p /root/models /root/datasets")
@@ -19,14 +22,24 @@ def prepare():
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
     U.hf_download_dataset("zhuzilin/aime-2024")
 
-    U.convert_checkpoint(model_name=MODEL_NAME, megatron_model_type=MODEL_TYPE, num_gpus_per_node=NUM_GPUS)
+    if U.is_rocm():
+        U.convert_checkpoint(
+            model_name=MODEL_NAME,
+            megatron_model_type=MODEL_TYPE,
+            num_gpus_per_node=NUM_GPUS,
+            extra_args="--no-gradient-accumulation-fusion --attention-backend flash",
+            dir_dst="/tmp",
+        )
+    else:
+        U.convert_checkpoint(model_name=MODEL_NAME, megatron_model_type=MODEL_TYPE, num_gpus_per_node=NUM_GPUS)
 
 
 def execute():
+    ref_load = f"{MG_PATH}/" if U.is_rocm() else f"/root/{MODEL_NAME}_torch_dist"
     if USE_FP8_ROLLOUT:
-        ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}-FP8 " f"--ref-load /root/{MODEL_NAME}_torch_dist "
+        ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}-FP8 " f"--ref-load {ref_load} "
     else:
-        ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME} " f"--ref-load /root/{MODEL_NAME}_torch_dist "
+        ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME} " f"--ref-load {ref_load} "
 
     rollout_args = (
         "--prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl "
@@ -93,9 +106,9 @@ def execute():
 
     vllm_args = (
         "--rollout-num-gpus-per-engine 8 "
-        "--vllm-gpu-memory-utilization 0.8 "
+        f"--vllm-gpu-memory-utilization {'0.3' if U.is_rocm() else '0.8'} "
         "--vllm-max-num-seqs 512 "
-        "--vllm-max-cudagraph-capture-size 16 "
+        f"{'' if U.is_rocm() else '--vllm-max-cudagraph-capture-size 16 '}"
     )
 
     if USE_DEEPEP:
@@ -121,6 +134,9 @@ def execute():
         misc_args += "--moe-token-dispatcher-type flex --moe-enable-deepep "
     else:
         misc_args += "--moe-token-dispatcher-type alltoall "
+
+    if U.is_rocm():
+        misc_args += "--no-gradient-accumulation-fusion --no-offload-train "
 
     train_args = (
         f"{ckpt_args} "

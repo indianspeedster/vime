@@ -18,18 +18,29 @@ MODEL_TYPE = "qwen3.5-0.8B"
 NUM_GPUS = 4
 NUM_ROLLOUT = 2
 TORCH_DIST_CKPT = f"/dev/shm/{MODEL_NAME}_torch_dist"
+# ROCm converts HF->Megatron into a container-local path (no modelopt bridge).
+MG_PATH = f"/tmp/{MODEL_NAME}_torch_dist"
 
 
 def prepare():
     U.exec_command("mkdir -p /root/models /root/datasets")
     U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/gsm8k")
-    U.convert_checkpoint(
-        model_name=MODEL_NAME,
-        megatron_model_type=MODEL_TYPE,
-        num_gpus_per_node=NUM_GPUS,
-        dir_dst="/dev/shm",
-    )
+    if U.is_rocm():
+        U.convert_checkpoint(
+            model_name=MODEL_NAME,
+            megatron_model_type=MODEL_TYPE,
+            num_gpus_per_node=NUM_GPUS,
+            extra_args="--no-gradient-accumulation-fusion --attention-backend flash",
+            dir_dst="/tmp",
+        )
+    else:
+        U.convert_checkpoint(
+            model_name=MODEL_NAME,
+            megatron_model_type=MODEL_TYPE,
+            num_gpus_per_node=NUM_GPUS,
+            dir_dst="/dev/shm",
+        )
 
 
 def execute():
@@ -37,13 +48,22 @@ def execute():
         save_dir = Path(work_dir) / "mcore"
         update_weight_dir = Path(work_dir) / "update_weight"
 
-        ckpt_args = (
-            f"--hf-checkpoint /root/models/{MODEL_NAME}/ "
-            f"--ref-load {TORCH_DIST_CKPT} "
-            "--release-train "
-            f"--save {quote(str(save_dir))} "
-            "--save-interval 1 "
-        )
+        if U.is_rocm():
+            ckpt_args = (
+                f"--hf-checkpoint /root/models/{MODEL_NAME}/ "
+                f"--ref-load {MG_PATH}/ "
+                "--release-train "
+                f"--save {quote(str(save_dir))} "
+                "--save-interval 1 "
+            )
+        else:
+            ckpt_args = (
+                f"--hf-checkpoint /root/models/{MODEL_NAME}/ "
+                f"--ref-load {TORCH_DIST_CKPT} "
+                "--release-train "
+                f"--save {quote(str(save_dir))} "
+                "--save-interval 1 "
+            )
 
         rollout_args = (
             "--prompt-data /root/datasets/gsm8k/train.parquet "
@@ -94,8 +114,8 @@ def execute():
 
         vllm_args = (
             "--rollout-num-gpus-per-engine 1 "
-            "--vllm-gpu-memory-utilization 0.7 "
-            "--vllm-max-cudagraph-capture-size 16 "
+            f"--vllm-gpu-memory-utilization {'0.3' if U.is_rocm() else '0.7'} "
+            f"{'' if U.is_rocm() else '--vllm-max-cudagraph-capture-size 16 '}"
         )
 
         disk_update_args = (
@@ -116,6 +136,7 @@ def execute():
             "--actor-num-nodes 1 "
             f"--actor-num-gpus-per-node {NUM_GPUS} "
             "--colocate "
+            f'{"--no-gradient-accumulation-fusion --no-offload-train " if U.is_rocm() else ""}'
         )
 
         train_args = (

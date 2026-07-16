@@ -49,6 +49,10 @@ MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
 NUM_GPUS = 4
 
+# ROCm converts HF->Megatron (no modelopt bridge). Write to a container-local
+# path so concurrent short tests sharing this model don't race on the output.
+MG_PATH = f"/tmp/{MODEL_NAME}_torch_dist"
+
 # Counter file used by the compact_generate helper. We pass its path
 # through to the Ray-submitted job via an env var so all worker
 # processes write to the same path.
@@ -62,6 +66,14 @@ def prepare():
     U.exec_command("mkdir -p /root/models /root/datasets")
     U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
+    if U.is_rocm():
+        U.convert_checkpoint(
+            MODEL_NAME,
+            MODEL_TYPE,
+            num_gpus_per_node=1,
+            extra_args="--no-gradient-accumulation-fusion --attention-backend flash",
+            dir_dst="/tmp",
+        )
     # Clear the counter so a previous run's invocations don't bleed in.
     try:
         os.remove(FANOUT_COUNTER_FILE)
@@ -70,7 +82,10 @@ def prepare():
 
 
 def execute():
-    ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/models/{MODEL_NAME}/ "
+    if U.is_rocm():
+        ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ --ref-load {MG_PATH}/ "
+    else:
+        ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/models/{MODEL_NAME}/ "
 
     # Shape: rollout_batch_size=4 prompts, n_samples_per_prompt=1 (all
     # fan-out is owned by compact_generate; this knob stays at 1 so a
@@ -144,7 +159,9 @@ def execute():
     )
 
     vllm_args = (
-        "--rollout-num-gpus-per-engine 1 " "--vllm-gpu-memory-utilization 0.7 " "--vllm-max-cudagraph-capture-size 8 "
+        "--rollout-num-gpus-per-engine 1 "
+        f"--vllm-gpu-memory-utilization {'0.3' if U.is_rocm() else '0.7'} "
+        f"{'' if U.is_rocm() else '--vllm-max-cudagraph-capture-size 8 '}"
     )
 
     ci_args = "--ci-test "
@@ -165,7 +182,8 @@ def execute():
         "--actor-num-nodes 1 "
         "--actor-num-gpus-per-node 4 "
         "--colocate "
-        "--megatron-to-hf-mode bridge "
+        f'{"--megatron-to-hf-mode bridge " if not U.is_rocm() else ""}'
+        f'{"--no-gradient-accumulation-fusion --no-offload-train " if U.is_rocm() else ""}'
     )
 
     train_args = (

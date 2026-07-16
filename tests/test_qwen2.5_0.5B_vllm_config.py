@@ -7,6 +7,10 @@ MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
 NUM_GPUS = 8
 
+# ROCm converts HF->Megatron (no modelopt bridge). Write to a container-local
+# path so concurrent short tests sharing this model don't race on the output.
+MG_PATH = f"/tmp/{MODEL_NAME}_torch_dist"
+
 # Inline vLLM config: same model, 3 engine groups with different parallelism.
 # Group 1: 4 GPUs, 2 GPUs/engine (tp=2) → 2 engines
 # Group 2: 2 GPUs, 1 GPU/engine  (tp=1) → 2 engines
@@ -30,6 +34,14 @@ def prepare():
     U.exec_command("mkdir -p /root/models /root/datasets")
     U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/gsm8k")
+    if U.is_rocm():
+        U.convert_checkpoint(
+            MODEL_NAME,
+            MODEL_TYPE,
+            num_gpus_per_node=1,
+            extra_args="--no-gradient-accumulation-fusion --attention-backend flash",
+            dir_dst="/tmp",
+        )
 
 
 def execute():
@@ -39,7 +51,10 @@ def execute():
     config_file.flush()
     config_path = config_file.name
 
-    ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/models/{MODEL_NAME}/ "
+    if U.is_rocm():
+        ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ --ref-load {MG_PATH}/ "
+    else:
+        ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/models/{MODEL_NAME}/ "
 
     rollout_args = (
         "--prompt-data /root/datasets/gsm8k/train.parquet "
@@ -98,9 +113,9 @@ def execute():
 
     vllm_args = (
         "--rollout-num-gpus-per-engine 1 "
-        "--vllm-gpu-memory-utilization 0.7 "
+        f"--vllm-gpu-memory-utilization {'0.3' if U.is_rocm() else '0.7'} "
         "--vllm-max-num-seqs 32 "
-        "--vllm-max-cudagraph-capture-size 16 "
+        f"{'' if U.is_rocm() else '--vllm-max-cudagraph-capture-size 16 '}"
         f"--vllm-config {config_path} "
     )
 
@@ -115,7 +130,8 @@ def execute():
         "--actor-num-nodes 1 "
         "--actor-num-gpus-per-node 8 "
         "--colocate "
-        "--megatron-to-hf-mode bridge "
+        f'{"--megatron-to-hf-mode bridge " if not U.is_rocm() else ""}'
+        f'{"--no-gradient-accumulation-fusion --no-offload-train " if U.is_rocm() else ""}'
     )
 
     train_args = (
