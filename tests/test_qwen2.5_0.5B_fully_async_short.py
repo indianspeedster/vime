@@ -12,20 +12,35 @@ existing 0.5B short tests.
 import os
 import vime.utils.external_utils.command_utils as U
 
-
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
 NUM_GPUS = 4
 
+HF_PATH = f"/root/models/{MODEL_NAME}"
+# ROCm converts HF->Megatron (no modelopt bridge). Write to a container-local
+# path so concurrent short tests sharing this model don't race on the output.
+MG_PATH = f"/tmp/{MODEL_NAME}_torch_dist"
+
 
 def prepare():
     U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
+    U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir {HF_PATH}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
+    if U.is_rocm():
+        U.convert_checkpoint(
+            MODEL_NAME,
+            MODEL_TYPE,
+            num_gpus_per_node=1,
+            extra_args="--no-gradient-accumulation-fusion --attention-backend flash",
+            dir_dst="/tmp",
+        )
 
 
 def execute():
-    ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/models/{MODEL_NAME}/ "
+    if U.is_rocm():
+        ckpt_args = f"--hf-checkpoint {HF_PATH}/ --ref-load {MG_PATH}/ "
+    else:
+        ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/models/{MODEL_NAME}/ "
 
     rollout_args = (
         # The only line that differs from test_qwen2.5_0.5B_async_short.py:
@@ -78,8 +93,8 @@ def execute():
 
     vllm_args = (
         "--rollout-num-gpus-per-engine 1 "
-        "--vllm-gpu-memory-utilization 0.65 "
-        "--vllm-max-cudagraph-capture-size 16 "
+        f"--vllm-gpu-memory-utilization {'0.3' if U.is_rocm() else '0.65'} "
+        f"{'' if U.is_rocm() else '--vllm-max-cudagraph-capture-size 16 '}"
     )
 
     ci_args = "--ci-test "
@@ -100,7 +115,8 @@ def execute():
         "--actor-num-nodes 1 "
         "--actor-num-gpus-per-node 1 "
         "--rollout-num-gpus 3 "
-        "--megatron-to-hf-mode bridge "
+        f'{"--megatron-to-hf-mode bridge " if not U.is_rocm() else ""}'
+        f'{"--no-gradient-accumulation-fusion --no-offload-train " if U.is_rocm() else ""}'
     )
 
     train_args = (
