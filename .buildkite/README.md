@@ -71,3 +71,44 @@ pod spec).
 
 The test lists live in `pipeline.yml` and `gpu_suites.py`; update both together
 when adding or removing suites.
+
+## ROCm GPU suites (AMD MI300X / MI350X)
+
+AMD GPU tests use a separate pipeline defined in
+[`pipeline-rocm.yaml`](./pipeline-rocm.yaml) (generated from
+[`gen_rocm_pipeline.py`](./gen_rocm_pipeline.py)). Tests run on self-hosted
+agents tagged `queue=amd_gfx950` inside the prebuilt `vllm/vime-rocm:latest`
+image.
+
+### Running tests locally (no Buildkite)
+
+Use the top-level `run_test.sh` script:
+
+```bash
+# Prerequisites
+1. AMD GPU with ROCm (MI300X / MI350X)
+2. docker pull vllm/vime-rocm:latest
+3. export HF_HOME=/path/to/huggingface_cache  # ~200 GB free
+
+# Run the short smoke-test suite (3 tests, ~10 min)
+./run_test.sh
+
+# Run a specific test
+./run_test.sh test_qwen2.5_0.5B_fully_async_short.py
+
+# Run a larger suite
+./run_test.sh --suite megatron
+./run_test.sh --suite all
+```
+
+The script handles Docker container lifecycle, GPU arbitration via
+`gpu_lock_exec.py`, and HF model caching. No Buildkite or GitHub Actions
+required.
+
+### Environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `VIME_ROCM_IMAGE` | `vllm/vime-rocm:latest` | Docker image |
+| `HF_HOME` | `~/.cache/huggingface` | HuggingFace cache |
+| `NUM_GPUS` | `1` | Default GPUs per test |
