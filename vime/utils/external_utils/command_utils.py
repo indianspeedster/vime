@@ -185,9 +185,7 @@ def execute_train(
                 "PYTHONPATH": f"{repo_base_dir}:/root/Megatron-LM/",
                 "RAY_USE_UVLOOP": "0",
                 "CUDA_DEVICE_MAX_CONNECTIONS": "1",
-                "NCCL_NVLS_ENABLE": "0",
                 "MASTER_ADDR": master_addr,
-                "WANDB_MODE": "disabled",
                 **extra_env_vars,
                 **_parse_extra_env_vars(config.extra_env_vars),
             }
