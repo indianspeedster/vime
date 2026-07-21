@@ -1,22 +1,12 @@
-# Buildkite CI for vime — AMD ROCm GPU suites.
+# Buildkite CI for vime — AMD ROCm GPU suites. See .buildkite/README.md.
 #
-# Declarative ROCm pipeline in the style of vllm-omni's .buildkite/test-amd*.yaml
-# (one step per test on a self-hosted AMD agent queue; `soft_fail` for suites
-# that run but aren't green yet), adapted to vime:
-#   * tests run inside the prebuilt ROCm image (docker/Dockerfile.rocm) via
-#     `docker run` with the ROCm devices passed through, mirroring how the CUDA
-#     suites run in a prebuilt vllm/vime container;
-#   * GPUs are arbitrated across concurrent steps with tests/ci/gpu_lock_exec.py
-#     on HIP_VISIBLE_DEVICES (the AMD analogue of CUDA_VISIBLE_DEVICES);
-#   * tests take the U.is_rocm() path (HF->Megatron conversion, no bridge).
+# One step per test on the self-hosted gfx950 (MI350X) queue (queue=amd_gfx950,
+# docker access + ROCm devices /dev/kfd, /dev/dri). Each test runs in the
+# prebuilt ROCm image and takes the U.is_rocm() path; GPUs are arbitrated with
+# tests/ci/gpu_lock_exec.py on HIP_VISIBLE_DEVICES.
 #
-# One-time setup (see .buildkite/README.md):
-#   * a Buildkite agent on the gfx950 (MI350X) node tagged  queue=amd_gfx950
-#     with docker access and the ROCm devices (/dev/kfd, /dev/dri) available.
-#
-# Blocking vs soft_fail mirrors vllm-omni's `grade`: fully_async is validated
-# end-to-end on ROCm and gates the build; the gsm8k suites run but stay
-# non-blocking until the vLLM/ROCm NaN-logprob divergence is fixed.
+# Grading: fully_async gates the build; the gsm8k suites soft_fail (non-blocking)
+# until the vLLM/ROCm NaN-logprob divergence is fixed.
 
 env:
   # Prebuilt ROCm image (built from docker/Dockerfile.rocm). Override per-agent

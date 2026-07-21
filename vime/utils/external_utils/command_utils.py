@@ -183,6 +183,7 @@ def execute_train(
                 "no_proxy": f"127.0.0.1,{master_addr}",
                 "PYTHONUNBUFFERED": "1",
                 "PYTHONPATH": f"{repo_base_dir}:/root/Megatron-LM/",
+                "RAY_USE_UVLOOP": "0",
                 "CUDA_DEVICE_MAX_CONNECTIONS": "1",
                 "NCCL_NVLS_ENABLE": "0",
                 "MASTER_ADDR": master_addr,
@@ -190,7 +191,9 @@ def execute_train(
                 **extra_env_vars,
                 **_parse_extra_env_vars(config.extra_env_vars),
             }
-            amd_exports = " ".join(f"{k}={v}" for k, v in amd_env.items())
+            import shlex
+
+            amd_exports = " ".join(f"{k}={shlex.quote(str(v))}" for k, v in amd_env.items())
             exec_command(
                 f"export {amd_exports} && "
                 f"{cmd_megatron_model_source}"
