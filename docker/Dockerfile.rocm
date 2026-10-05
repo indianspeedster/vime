@@ -1,15 +1,6 @@
-# vime on AMD ROCm, layered on AMD's published vLLM ROCm nightly image.
+# vime on AMD ROCm. The base ships the inference half (ROCm, torch, triton,
+# aiter, flash-attn, vLLM); this adds the training half. Defaults to gfx950.
 #
-# The base (vllm/vllm-openai-rocm:nightly) already ships the whole inference
-# half of the stack — ROCm 7.2.x, a ROCm PyTorch build, triton, aiter,
-# flash-attn (CK), amdsmi, cupy and vLLM itself — so this file only adds the
-# training half that vime needs: TransformerEngine, apex, Megatron-LM (+ AMD
-# patches), torch_memory_saver, vime's Python requirements and vime.
-#
-# Targets gfx950 (MI350X/MI355X) by default; pass --build-arg GPU_ARCH=... for
-# another CDNA arch.
-#
-# Build:
 #   DOCKER_BUILDKIT=1 docker build -f docker/Dockerfile.rocm -t vllm/vime-rocm:latest .
 
 ARG BASE_IMAGE=vllm/vllm-openai-rocm:nightly
@@ -41,9 +32,7 @@ WORKDIR /root/
 
 # ======================================== Apt dependencies =============================================
 
-# The base is an inference image: git, cmake, ninja, ccache, patch and hipcc are
-# already there. rsync backs vime.utils.external_utils.command_utils.rsync_simple;
-# the rest are Ray/network debugging tools, matching docker/Dockerfile.
+# rsync backs command_utils.rsync_simple; the rest mirror docker/Dockerfile.
 RUN apt-get update && apt-get install -y \
     rsync dnsutils iproute2 prometheus && \
     rm -rf /var/lib/apt/lists/*
@@ -74,10 +63,8 @@ RUN pip install --no-deps --no-cache-dir \
 
 # ======================================== Megatron-LM =========================
 
-# vime's mainline Megatron (NVIDIA/Megatron-LM at ${MEGATRON_COMMIT}) plus the
-# AMD patches under docker/amd_patch/${PATCH_VERSION}/. The ROCm
-# fork-after-HIP-init checkpoint segfault is handled at runtime by
-# vime.utils.rocm_checkpoint_writer.
+# NVIDIA/Megatron-LM + docker/amd_patch/. The fork-after-HIP-init checkpoint
+# segfault is handled at runtime by vime.utils.rocm_checkpoint_writer.
 RUN git clone https://github.com/NVIDIA/Megatron-LM.git --recursive /root/Megatron-LM && \
     cd /root/Megatron-LM && git checkout ${MEGATRON_COMMIT}
 
@@ -107,49 +94,24 @@ RUN pip install "git+https://github.com/fzyzcjy/torch_memory_saver.git@${TMS_COM
 COPY requirements.txt /tmp/vime-requirements.txt
 RUN pip install --no-cache-dir -r /tmp/vime-requirements.txt
 
-# vime.backends.megatron_utils.initialize asserts numpy 1.x, while the base
-# image ships numpy 2 and SciPy 1.18+ requires it — so both get pinned back,
-# same as docker/Dockerfile. The base's cupy-rocm-7-0 is built against the
-# numpy 2 ABI and stops importing here; nothing in vime, vLLM, aiter or Megatron
-# imports it.
+# megatron_utils.initialize asserts numpy 1.x, so numpy and SciPy pin back.
+# Costs the base's cupy (numpy 2 ABI), which nothing here imports.
 RUN pip install --no-cache-dir "numpy==1.26.4" "scipy==1.17.1"
 
 
 # ====================================== Patches ============================================
 
-# Patch vLLM with vime's local fixes. vLLM is a pip install (not a git checkout),
-# so there is no index to fall back on: every patch is applied with `patch`
-# rather than `git apply`, and a single .rej sweep at the end is what proves each
-# hunk landed. Pull-weights goes first because the general patch also updates
-# gpu_worker.py against the resulting line layout.
+# vLLM is a pip install, not a git checkout, so `patch` rather than `git apply`.
+# Pull-weights first: the general patch builds on its line layout.
 COPY docker/patch/${PATCH_VERSION}/vllm-pull_weights.patch /tmp/vllm-pull_weights.patch
 COPY docker/patch/${PATCH_VERSION}/vllm.patch /tmp/vllm.patch
 COPY docker/patch/${PATCH_VERSION}/vllm-inflight-queue-diagnostics.patch /tmp/vllm-inflight.patch
-#
-# Four ROCm-only deviations from docker/Dockerfile. The ROCm nightly is cut from
-# a different point on vLLM main than the CUDA base the patches are written
-# against, so it is ahead on some files and behind on others. Each deviation is
-# paired with a check that fails the build once the base converges, so none of
-# them can quietly outlive the drift that motivated it:
-#
-#   * `patch --fuzz=3` throughout. Context drifts by tens of lines on this base;
-#     the .rej sweep is what keeps that tolerance honest.
-#   * The Qwen3-Omni audio-encoder hunk is already upstream here, in a better
-#     form (TP sharding when the head count divides, disable_tp otherwise), so
-#     that file is dropped. The grep fails the build if a base stops carrying it.
-#   * The output_processor delta-sampling-mask hunk is dropped: it rewrites a
-#     block built on SamplingMaskLists.merge, which this base does not have yet.
-#     ROCm therefore keeps the finish-only mask behaviour it ships today.
-#   * vllm-pd-request-metrics.patch is skipped entirely: it patches
-#     vllm/entrypoints/openai/engine/protocol.py, which this base splits across
-#     generate/base/ and serve/engine/. The effect is missing per-request PD
-#     telemetry, which vime reads defensively (observability/trace_utils.py).
-#
-# The test-suite hunks are dropped from the inflight patch because site-packages
-# ships no tests/ tree; the same is true of the rust/ hunks skipped above.
+# This base carries the Qwen3-Omni and PD-metrics changes already, and lacks
+# SamplingMaskLists.merge, so those hunks are dropped; the guards below fail the
+# build once that stops being true. tests/ hunks have no target here.
 RUN VLLM_SITE="$(python3 -c 'import os, vllm; print(os.path.dirname(os.path.dirname(vllm.__file__)))')" && \
     cd "$VLLM_SITE" && \
-    grep -q 'disable_tp=self.disable_tp' vllm/model_executor/models/qwen3_omni_moe_thinker.py && \
+    grep -q 'disable_tp' vllm/model_executor/models/qwen3_omni_moe_thinker.py && \
     if [ ! -f vllm/v1/outputs.py ] || grep -q 'def merge' vllm/v1/outputs.py; then \
       echo "vllm/v1/outputs.py moved, or the base gained SamplingMaskLists.merge —" && \
       echo "recheck whether the output_processor hunk still has to be dropped." && \
@@ -163,11 +125,17 @@ RUN VLLM_SITE="$(python3 -c 'import os, vllm; print(os.path.dirname(os.path.dirn
       /tmp/vllm.patch > /tmp/vllm-rocm.patch && \
     awk '/^diff --git /{keep = ($0 !~ / b\/tests\//)} keep' \
       /tmp/vllm-inflight.patch > /tmp/vllm-inflight-rocm.patch && \
-    patch -p1 --forward --fuzz=3 --no-backup-if-mismatch < /tmp/vllm-pull_weights.patch && \
-    patch -p1 --forward --fuzz=3 --no-backup-if-mismatch < /tmp/vllm-rocm.patch && \
-    patch -p1 --forward --fuzz=3 --no-backup-if-mismatch < /tmp/vllm-inflight-rocm.patch && \
+    patch -p1 --forward --fuzz=1 --no-backup-if-mismatch < /tmp/vllm-pull_weights.patch && \
+    patch -p1 --forward --fuzz=1 --no-backup-if-mismatch < /tmp/vllm-rocm.patch && \
+    patch -p1 --forward --fuzz=1 --no-backup-if-mismatch < /tmp/vllm-inflight-rocm.patch && \
     if find . -name '*.rej' | grep -q .; then \
       echo "A vLLM patch did not apply cleanly — rebase docker/patch/${PATCH_VERSION}/." && \
+      exit 1; \
+    fi && \
+    if ! python3 -m compileall -q vllm >/dev/null; then \
+      echo "Patched vLLM does not compile. A fuzzy hunk landed in the wrong place:" && \
+      echo "re-cut docker/patch/${PATCH_VERSION}/ against this base rather than widening --fuzz." && \
+      python3 -m compileall -q vllm; \
       exit 1; \
     fi && \
     rm /tmp/vllm-pull_weights.patch /tmp/vllm.patch /tmp/vllm-rocm.patch \
@@ -188,16 +156,12 @@ RUN mkdir -p /opt/amdgpu/share/libdrm && \
 
 ENV CUDA_DEVICE_MAX_CONNECTIONS=1
 ENV HSA_NO_SCRATCH_RECLAIM=1
-# Pin aiter's build-time codegen arch instead of letting it sniff the host with
-# rocminfo. (aiter's runtime dispatch still reads the live GPU, so a process with
-# no visible device cannot `import aiter` — and ROCm apex imports it for fused
-# RoPE, which is why the check below stops short of megatron.training.)
+# Pin aiter's codegen arch rather than sniffing the host. Its runtime dispatch
+# still needs a device, so the check below stops short of megatron.training.
 ENV GPU_ARCHS=${GPU_ARCH}
 ENV VLLM_ROCM_USE_AITER=1
-# vime's rollout posts to vLLM's token-in-token-out /inference/v1/generate, and
-# this vLLM gates the scale-out endpoints behind an env var that defaults to off
-# (older nightlies mounted them unconditionally). Without this the rollout 404s.
-ENV VLLM_ENABLE_SCALE_OUT_ENDPOINTS=1
+# /inference/v1/generate is gated behind `--enable-scale-out`, passed by
+# backends/vllm_utils/vllm_engine.py (was VLLM_ENABLE_SCALE_OUT_ENDPOINTS).
 ENV MIOPEN_DEBUG_CONV_DIRECT=0
 ENV PYTHONPATH=/root/vime:/root/Megatron-LM
 
@@ -208,9 +172,9 @@ RUN python3 -c "\
 import torch, vllm, vime, transformer_engine, megatron.core; \
 import fake_int4_quant_cuda; \
 from vllm.distributed.weight_transfer.ipc_engine import IPCWeightTransferEngine; \
-from vllm.entrypoints.scale_out.token_in_token_out.protocol import GenerateResponse; \
+from vllm.entrypoints.scale_out.token_in_token_out.protocol import GenerateTokensResponse; \
 from vime.backends.vllm_utils.vllm_engine import VLLMEngine; \
-assert 'weight_version' in GenerateResponse.model_fields, 'vllm.patch did not apply'; \
+assert 'weight_version' in GenerateTokensResponse.model_fields, 'vllm.patch did not apply'; \
 print('torch', torch.__version__, 'hip', torch.version.hip); \
 print('vllm', vllm.__version__); \
 print('transformer_engine', transformer_engine.__version__); \
